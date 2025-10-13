@@ -12,7 +12,7 @@ async def chat_with_ai(request: ChatIn) -> ChatOut:
     Envia uma mensagem e recebe resp da ia.
     """
     try:
-        resposta = gerar_resposta([], request.message)
+        resposta = await gerar_resposta([], request.message)
         return ChatOut(response=resposta)
     except Exception as e:
         return ChatOut(response=f"Erro ao processar mensagem: {str(e)}")

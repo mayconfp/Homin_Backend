@@ -17,15 +17,16 @@ CAMINHO_BANCO_DE_DADOS = os.path.join(os.path.dirname(os.path.dirname(__file__))
 load_dotenv()
 OPENAI_API_KEY=os.getenv("OPENAI_API_KEY")
 
-def gerar_resposta(mensagens, entrada_usuario):
+async def gerar_resposta(mensagens, entrada_usuario):
 
     db = Chroma(persist_directory=CAMINHO_BANCO_DE_DADOS, embedding_function=OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model='text-embedding-3-small'))
 
         # Busca similaridade
     resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4) # o k é a qtd dos resultadados que vc qr qt mais aumenta mais contexto ele vai usar
 
-        # Para scores negativos, consideramos relevante se for maior que -0.8
-    if len(resultados) == 0 or resultados[0][1] < -0.8:
+        # Para scores negativos, consideramos relevante se for maior que -0.25
+        # Valores mais próximos de 0 indicam maior relevância
+    if len(resultados) == 0 or resultados[0][1] < -0.25:
         print("Não conseguiu encontrar nenhuma informação relevante na base")
     else:
             print(f"Informações relevantes encontradas! Score: {resultados[0][1]}")
@@ -36,18 +37,18 @@ def gerar_resposta(mensagens, entrada_usuario):
             texto = resultado[0].page_content
             textos_resultado.append(texto)
 
-        base_conhecimentos = "\n".join(textos_resultado) if textos_resultado else ""
+        base_conhecimentos = "\n".join(textos_resultado) if textos_resultado else "nenhuma informação encontrada"
 
-        # Busca web APENAS se não tiver informações locais suficientes
+        # Busca web se não tiver informações locais suficientes
         busca_web = ""
-        if len(resultados) == 0 or resultados[0][1] < -0.8:
+        if len(resultados) == 0 or resultados[0][1] < -0.25:
             print("Buscando informações na web...")
             try:
                 agente_busca = Agent(
-                    tools=[DuckDuckGoTools(modifier="Bluey empresa")],
-                    instructions="Busque informações relevantes na web sobre a empresa Bluey"
+                    tools=[DuckDuckGoTools(modifier="Saúde do homem")],
+                    instructions="Busque informações relevantes na web sobre a Saúde do homem"
                 )
-                resultado_busca = agente_busca.run(f'{entrada_usuario} Bluey')
+                resultado_busca = agente_busca.run(f'{entrada_usuario} Saúde do homem')
                 busca_web = f"Informações da web: {resultado_busca.content}"
             except Exception as e:
                 print(f"Erro ao realizar busca na web: {e}")
@@ -61,7 +62,7 @@ def gerar_resposta(mensagens, entrada_usuario):
         elif busca_web:
             contexto_final = f"Informações encontradas na web: {busca_web}"
         else:
-            contexto_final = "Informações gerais sobre a empresa Bluey."
+            contexto_final = "Informações gerais sobre saúde do homem."
 
         prompt_resposta_da_ia = f"""
             Você é a Touch, assistente do Homin, que são estudantes da uninassau que está desenvolvendo dicas de saúde do homem.
@@ -84,5 +85,5 @@ def gerar_resposta(mensagens, entrada_usuario):
         )
 
         # vai receber o prompt e todas as mensagens usuário + IA para manter contexto
-        resposta = model.invoke([prompt_resposta_da_ia]+mensagens)
+        resposta = await model.ainvoke([prompt_resposta_da_ia]+mensagens)
         return resposta.content

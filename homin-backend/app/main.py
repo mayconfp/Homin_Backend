@@ -24,5 +24,4 @@ app.include_router(ai_router)
 # from routes.document_routes import router as document_router
 
 # app.include_router(auth_router)
-# app.include_router(ai_router)
 # app.include_router(document_router)
