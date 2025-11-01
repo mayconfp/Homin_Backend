@@ -3,9 +3,12 @@ import json
 import requests
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
-from fastapi.security import HTTPBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt
 from dotenv import load_dotenv
+from typing import Dict, List, Annotated
+from app.core.permissions import Permissions
+from app.utils.permission_utils import validate_permission
 
 load_dotenv()
 
@@ -90,3 +93,25 @@ def verify_jwt(token: str):
             return payload
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
+
+
+# ========== DEPENDÊNCIAS PARA PROTEÇÃO DE ROTAS ==========
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
+    """Obtém o usuário atual validando o JWT"""
+    token = credentials.credentials
+    payload = verify_jwt(token)
+    return payload
+
+
+# Tipo de dependencia injection 
+LoggedUserDep = Annotated[Dict, Depends(get_current_user)]
+
+
+def require_permission_new(permission: Permissions):
+
+# para criar dependency que valida múltiplas permissões
+    async def check_permission(user: LoggedUserDep):
+        await validate_permission(user, permission)
+        return user
+    return check_permission

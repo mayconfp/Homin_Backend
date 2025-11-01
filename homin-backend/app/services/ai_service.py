@@ -8,8 +8,9 @@ from langchain_community.vectorstores import Chroma, chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from agno.agent import Agent
 from agno.tools.duckduckgo import DuckDuckGoTools
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
 import dotenv
 
 CAMINHO_BANCO_DE_DADOS = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'banco_de_dados')
@@ -17,73 +18,79 @@ CAMINHO_BANCO_DE_DADOS = os.path.join(os.path.dirname(os.path.dirname(__file__))
 load_dotenv()
 OPENAI_API_KEY=os.getenv("OPENAI_API_KEY")
 
+agente_classificador = Agent(
+    model=OpenAIChat(id="gpt-4o"),
+    instructions=""" 
+    Você é um classificador de mensagens . 
+    Classifique a mensagem do usuário em UMA das categorias:
+    
+    - SOCIAL: cumprimentos, agradecimentos, despedidas (oi, tchau, obrigado)
+    - MEDICA: perguntas relacionadas à saúde, sintomas, tratamentos
+    - GERAL: outras perguntas não relacionadas à saúde
+    
+    Responda APENAS com a categoria: SOCIAL, MEDICA ou GERAL""",
+    markdown=False,
+)
+
 async def gerar_resposta(mensagens, entrada_usuario):
+    # Classificar
+    try:
+        resposta = await agente_classificador.arun(entrada_usuario)
+        categoria = resposta.content.strip().upper()
+        print(f"✅ [DEBUG] Categoria classificada: '{categoria}'")
+    except Exception:
+        categoria = "GERAL"  # se a classificação falhar
 
-    db = Chroma(persist_directory=CAMINHO_BANCO_DE_DADOS, embedding_function=OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model='text-embedding-3-small'))
+    #  RETORNA para SOCIAL
+    if categoria == "SOCIAL":
+        return "Olá! Sou a Touch, como posso ajudar com saúde do homem?"
 
-        # Busca similaridade
-    resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4) # o k é a qtd dos resultadados que vc qr qt mais aumenta mais contexto ele vai usar
+    # Inicializar contexto_final
+    contexto_final = "Conhecimento geral sobre saúde do homem"
 
-        # Para scores negativos, consideramos relevante se for maior que -0.25
-        # Valores mais próximos de 0 indicam maior relevância
-    if len(resultados) == 0 or resultados[0][1] < -0.25:
-        print("Não conseguiu encontrar nenhuma informação relevante na base")
-    else:
-            print(f"Informações relevantes encontradas! Score: {resultados[0][1]}")
+    # GERAL - sem busca web
+    if categoria == "GERAL":
+        contexto_final = "Você é a Touch, focada em saúde do homem. Responda educadamente redirecionando para tópicos de saúde."
 
-    textos_resultado = []
-    if len(resultados) > 0:
-        for resultado in resultados:
-            texto = resultado[0].page_content
-            textos_resultado.append(texto)
+    # MEDICA busca local e web se necessário
+    elif categoria == "MEDICA":
+        db = Chroma(persist_directory=CAMINHO_BANCO_DE_DADOS, embedding_function=OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model='text-embedding-3-small'))
 
-        base_conhecimentos = "\n".join(textos_resultado) if textos_resultado else "nenhuma informação encontrada"
+        # Indica que a busca local está ocorrendo
+        print("🔍 [DEBUG] Fazendo busca por similaridade...")
+        resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4)
 
-        # Busca web se não tiver informações locais suficientes
-        busca_web = ""
-        if len(resultados) == 0 or resultados[0][1] < -0.25:
-            print("Buscando informações na web...")
+        # Se não achou nada bom localmente busca web
+        if len(resultados) == 0 or resultados[0][1] < -0.3:
+            print("🌍 [DEBUG] Score baixo ou sem resultados - buscando na web...")
             try:
                 agente_busca = Agent(
-                    tools=[DuckDuckGoTools(modifier="Saúde do homem")],
-                    instructions="Busque informações relevantes na web sobre a Saúde do homem"
+                    tools=[DuckDuckGoTools()],
+                    instructions="Busque informações sobre saúde do homem"
                 )
-                resultado_busca = agente_busca.run(f'{entrada_usuario} Saúde do homem')
-                busca_web = f"Informações da web: {resultado_busca.content}"
-            except Exception as e:
-                print(f"Erro ao realizar busca na web: {e}")
-                busca_web = ""
+                resultado = await agente_busca.arun(entrada_usuario)
+                resposta_busca = resultado.content
+            except Exception:
+                resposta_busca = ""
         else:
-            print("Informações locais suficientes encontradas, não buscando na web")
+            resposta_busca = ""
 
-        # Define contexto final
-        if base_conhecimentos:
-            contexto_final = f"Informações dos documentos internos: {base_conhecimentos}"
-        elif busca_web:
-            contexto_final = f"Informações encontradas na web: {busca_web}"
-        else:
-            contexto_final = "Informações gerais sobre saúde do homem."
+        # Definir contexto baseado no que achou
+        if resultados and resultados[0][1] >= -0.3:
+            contexto_docs = "\n".join([doc[0].page_content for doc in resultados])
+            contexto_final = f"Com base nos documentos internos sobre saúde do homem:\n{contexto_docs}"
+        elif resposta_busca:
+            contexto_final = f"Com base em informações encontradas na web:\n{resposta_busca}"
 
-        prompt_resposta_da_ia = f"""
-            Você é a Touch, assistente do Homin, que são estudantes da uninassau que está desenvolvendo dicas de saúde do homem.
-            
-            {contexto_final}
-            
-            Responda à pergunta: {entrada_usuario}
-            
-            IMPORTANTE: Sempre cite a origem das informações quando possível (documentos internos ou informações públicas).
-            
-            Se não houver informações específicas, seja amigável e ofereça ajuda.
-            """
+    # Gerar resposta final
+    prompt = f"""Você é a Touch, assistente do Homin focada em saúde do homem.
+    {contexto_final}
 
+    Pergunta do usuário: {entrada_usuario}
 
-        model = ChatOpenAI(
-            openai_api_key=OPENAI_API_KEY,
-            model='gpt-4o',
-            temperature=0.5,
-            max_tokens=2000
-        )
+    Responda de forma clara, amigável e cite a fonte das informações quando possível."""
 
-        # vai receber o prompt e todas as mensagens usuário + IA para manter contexto
-        resposta = await model.ainvoke([prompt_resposta_da_ia]+mensagens)
-        return resposta.content
+    model = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY, temperature=0)
+    resposta_final = await model.ainvoke(prompt)
+
+    return resposta_final.content
