@@ -1,39 +1,21 @@
-# Environment / secrets
+# Environment files
 .env
-.env.*
+.env.local
+.env.*.backup
 
-# Virtual environments
-.venv/
-venv/
-env/
-/.venv/
-
-# Python cache
+# Python artifacts
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
+*.pyd
 
-# Chroma / vector DB and local data
-banco_de_dados/
-app/banco_de_dados/
-*.db
+# virtual env
+venv/
+.envrc
 
-# IDEs and editors
+# IDEs
 .vscode/
 .idea/
 
-# OS files
-.DS_Store
-
-# Logs
-*.log
-
-# Test / coverage
-.pytest_cache/
-.coverage
-htmlcov/
-
-
-# Ignore virtualenv installed packages accidentally added
-.venv/Lib/
-.venv/Scripts/
+# Database
+banco_de_dados/
