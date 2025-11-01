@@ -1,0 +1,21 @@
+# Environment files
+.env
+.env.local
+.env.*.backup
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# virtual env
+venv/
+.envrc
+
+# IDEs
+.vscode/
+.idea/
+
+# Database
+banco_de_dados/
