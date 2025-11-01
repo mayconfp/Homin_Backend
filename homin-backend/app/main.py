@@ -19,6 +19,9 @@ from app.routes.rag.ai_routes import router as ai_router
 app.include_router(ai_router)
 
 # Importar e incluir as rotas aqui
+
+from app.routes.auth_routes import router as auth_router
+app.include_router(auth_router)
 # from routes.auth_routes import router as auth_router
 # from routes.ai_routes import router as ai_router
 # from routes.document_routes import router as document_router
