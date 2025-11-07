@@ -1,120 +1,124 @@
-# Rotas para gerenciamento de documentos (ADMIN)
-# Endpoints para CRUD de documentos - apenas administradores
-
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from typing import List
-from app.services.auth import LoggedUserDep
+import os
+import uuid
+from pathlib import Path
+from fastapi import APIRouter, UploadFile, File, HTTPException, status
+from sqlalchemy import select
 from app.core.permissions import Permissions
+from app.database.models import Documento
+from app.utils.deps import SessionDep, LocalUserDep
+from app.services.auth import LoggedUserDep
 from app.utils.permission_utils import validate_permission
 from app.services.document_service import criar_db_async
-import os
+from app.routes.documents.schema import DocumentOut, DocumentCreate, DocumentList, DocumentsListResponse, MessageResponse, DocumentList
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
-@router.post("/upload")
+
+# apenas admin pode subir documentos que manda para o postgre e salva na base para IA 
+@router.post("/upload", status_code=status.HTTP_201_CREATED, response_model=DocumentOut)
 async def upload_document(
-    user: LoggedUserDep,
-    file: UploadFile = File(...)
+    user: LocalUserDep,
+    auth_user: LoggedUserDep,
+    db_session: SessionDep,
+    file: UploadFile = File(...),
 ):
-    """Endpoint para upload de documento - apenas admin"""
     # Admin pode fazer tudo com documentos
-    await validate_permission(user, Permissions.ADMIN_DOCUMENTS)
+    await validate_permission(auth_user, Permissions.ADMIN_DOCUMENTS)
     
     try:
-        # Salvar arquivo na pasta base_conhecimento
-        file_path = f"app/base_conhecimento/{file.filename}"
+        safe_filename = Path(file.filename).name
+        file_path = f"app/base_conhecimento/{safe_filename}"
         
-        # Criar diretório se não existir
+        # salvar no banco de dados
+        novo_documento = Documento(
+            id_usuario=user.id_usuario,
+            nome_arquivo=safe_filename,
+            tipo_documento=file.content_type or "application/pdf"
+        )
+        db_session.add(novo_documento)
+        await db_session.commit()
+        await db_session.refresh(novo_documento)
+
         os.makedirs("app/base_conhecimento", exist_ok=True)
-        
-        # Salvar arquivo
         with open(file_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
-        
-        # Reprocessar base de conhecimento
         await criar_db_async()
-        
-        return {"message": f"Documento {file.filename} enviado e processado com sucesso"}
+
+        return novo_documento
     except Exception as e:
+        await db_session.rollback()  #  tudo funciona ou nada funciona
         raise HTTPException(status_code=500, detail=f"Erro ao processar documento: {str(e)}")
 
 
-@router.get("/list")
-async def list_documents(user: LoggedUserDep):
-    """Listar documentos na base de conhecimento - apenas admin"""
-    # Admin pode fazer tudo com documentos
-    await validate_permission(user, Permissions.ADMIN_DOCUMENTS)
-    
+#lista documento da base e só apenas adm pode ver
+@router.get("/list", response_model=DocumentsListResponse)
+async def listar_documentos(
+    user: LocalUserDep,
+    auth_user: LoggedUserDep,
+    db_session: SessionDep,
+):
+    await validate_permission(auth_user, Permissions.ADMIN_DOCUMENTS)
+
     try:
         base_path = "app/base_conhecimento"
         if not os.path.exists(base_path):
-            return {"documents": []}
+            return DocumentsListResponse(documents=[])
         
         documents = []
         for filename in os.listdir(base_path):
             if filename.endswith('.pdf'):
                 file_path = os.path.join(base_path, filename)
                 size = os.path.getsize(file_path)
-                documents.append({
-                    "filename": filename,
-                    "size_bytes": size
-                })
+                documents.append(DocumentList(
+                    filename=filename,
+                    size_bytes=size
+                ))
         
-        return {"documents": documents}
+        return DocumentsListResponse(documents=documents)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao listar documentos: {str(e)}")
 
 
-@router.delete("/{filename}")
-async def delete_document(filename: str, user: LoggedUserDep):
-    """Deletar documento - apenas admin"""
-    # Admin pode fazer tudo com documentos
+#deletar pelo id unico e apagar da base de conhecimento apenas adm apaga documentos
+@router.delete("/{documento_id}")
+async def delete_documento(
+    documento_id: uuid.UUID,
+    user: LoggedUserDep,
+    db_session: SessionDep
+):
     await validate_permission(user, Permissions.ADMIN_DOCUMENTS)
-    
+
     try:
-        file_path = f"app/base_conhecimento/{filename}"
+        # Buscar documento no banco
+        stmt = select(Documento).where(Documento.id_documento == documento_id)
+        documento = await db_session.scalar(stmt)
         
-        if not os.path.exists(file_path):
+        if not documento:
             raise HTTPException(status_code=404, detail="Documento não encontrado")
-        
-        os.remove(file_path)
-        
-        # Reprocessar base de conhecimento
-        await criar_db_async()
-        
-        return {"message": f"Documento {filename} removido com sucesso"}
+
+        # Remover arquivo físico
+        file_path = f"app/base_conhecimento/{documento.nome_arquivo}"
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        # Remover do banco
+        await db_session.delete(documento)
+        await db_session.commit()
+
+        return {"message": f"Documento {documento.nome_arquivo} removido com sucesso"}
     except Exception as e:
+        await db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Erro ao remover documento: {str(e)}")
 
 
+# serve para reindexar documentos caso upload falhe no meio do processo
 @router.post("/reindex")
-async def reindex_documents(user: LoggedUserDep):
-    """Reprocessar toda a base de conhecimento - apenas admin"""
-    # Admin pode fazer tudo com documentos
+async def reindexar_documents(user: LoggedUserDep, db_session: SessionDep):
     await validate_permission(user, Permissions.ADMIN_DOCUMENTS)
     
     try:
-        await criar_db_async()
+        await criar_db_async()  # Só reprocessa, não modifica DB
         return {"message": "Base de conhecimento reprocessada com sucesso"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao reprocessar base: {str(e)}")
-    
-    
-#     """Endpoint para obter documento específico"""
-#     pass
-
-# @router.put("/{document_id}")
-# async def update_document(document_id: int, document: DocumentUpdate):
-#     """Endpoint para atualizar documento"""
-#     pass
-
-# @router.delete("/{document_id}")
-# async def delete_document(document_id: int):
-#     """Endpoint para deletar documento"""
-#     pass
-
-# @router.post("/{document_id}/upload")
-# async def upload_file_to_document(document_id: int, file: UploadFile):
-#     """Endpoint para upload de arquivo para documento"""
-#     pass

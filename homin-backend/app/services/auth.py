@@ -7,8 +7,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt
 from dotenv import load_dotenv
 from typing import Dict, List, Annotated
+from sqlalchemy import select
 from app.core.permissions import Permissions
-from app.utils.permission_utils import validate_permission
+from app.database.models import Usuario
+from app.utils.deps import SessionDep, verify_jwt
 
 load_dotenv()
 
@@ -65,53 +67,63 @@ def get_user_info(access_token: str):
     return response.json()
 
 
-def verify_jwt(token: str):
-    """Verifica e decodifica um JWT emitido pelo Auth0"""
-    try:
-        header = jwt.get_unverified_header(token)
-        jwks_url = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
-        jwks = requests.get(jwks_url).json()
-        rsa_key = {}
-
-        for key in jwks["keys"]:
-            if key["kid"] == header["kid"]:
-                rsa_key = {
-                    "kty": key["kty"],
-                    "kid": key["kid"],
-                    "use": key["use"],
-                    "n": key["n"],
-                    "e": key["e"],
-                }
-        if rsa_key:
-            payload = jwt.decode(
-                token,
-                rsa_key,
-                algorithms=["RS256"],
-                audience=AUTH0_AUDIENCE,
-                issuer=f"https://{AUTH0_DOMAIN}/"
-            )
-            return payload
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
-
-
 # ========== DEPENDÊNCIAS PARA PROTEÇÃO DE ROTAS ==========
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
-    """Obtém o usuário atual validando o JWT"""
+async def sync_user_to_local_db(payload: Dict, db_session: SessionDep) -> None:
+    """Sincroniza usuário do Auth0 para a base local (não bloqueia se der erro)"""
+    try:
+        email = payload.get("email")
+        nome = payload.get("name", email)
+        
+        if not email:
+            return  # Skip se não tiver email
+        
+        # Buscar usuário na base local
+        stmt = select(Usuario).where(Usuario.email == email)
+        user = await db_session.scalar(stmt)
+        
+        if not user:
+            # Primeira vez: criar usuário com permissão básica
+            user = Usuario(
+                email=email,
+                nome=nome,
+                role="user"  # Por padrão: apenas CHAT_ACCESS
+            )
+            db_session.add(user)
+            await db_session.commit()
+            print(f"✅ Novo usuário criado na base local: {email}")
+        else:
+            # Atualizar nome se mudou
+            if user.nome != nome:
+                user.nome = nome
+                await db_session.commit()
+    except Exception as e:
+        print(f"⚠️ Erro ao sincronizar usuário na base local: {e}")
+        # Não falha - continua com auth normal
+
+
+async def get_current_user(
+    db_session: SessionDep,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Dict:
+    """Obtém o usuário atual validando o JWT + sincroniza na base local"""
     token = credentials.credentials
     payload = verify_jwt(token)
+    
+    # Sincronizar com base local (em background, sem bloquear)
+    await sync_user_to_local_db(payload, db_session)
+    
     return payload
 
 
-# Tipo de dependencia injection 
+# Tipo de dependência injection
 LoggedUserDep = Annotated[Dict, Depends(get_current_user)]
 
 
 def require_permission_new(permission: Permissions):
-
-# para criar dependency que valida múltiplas permissões
+    # para criar dependency que valida múltiplas permissões
     async def check_permission(user: LoggedUserDep):
+        from app.utils.permission_utils import validate_permission
         await validate_permission(user, permission)
         return user
     return check_permission

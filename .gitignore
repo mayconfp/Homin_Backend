@@ -19,3 +19,11 @@ venv/
 
 # Database
 banco_de_dados/
+
+# Docker (ambiente local de desenvolvimento)
+docker-compose.yml
+docker-compose.override.yml
+docker/
+
+# Alembic cache
+alembic/__pycache__/
