@@ -8,8 +8,9 @@ from langchain_community.vectorstores import Chroma, chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from agno.agent import Agent
 from agno.tools.duckduckgo import DuckDuckGoTools
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
 import dotenv
 
 CAMINHO_BANCO_DE_DADOS = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'banco_de_dados')
@@ -17,73 +18,138 @@ CAMINHO_BANCO_DE_DADOS = os.path.join(os.path.dirname(os.path.dirname(__file__))
 load_dotenv()
 OPENAI_API_KEY=os.getenv("OPENAI_API_KEY")
 
-async def gerar_resposta(mensagens, entrada_usuario):
 
+def extrair_primeiro_nome(nome: str | None) -> str | None:
+    """Retorna o primeiro nome formatado (Title-case) ou None se não houver nome."""
+    if not nome:
+        return None
+    # Remove espaços extras e pega o primeiro token
+    primeiro = nome.strip().split()[0]
+    # Normaliza: transforma em Title case para respostas mais naturais
+    try:
+        return primeiro.title()
+    except Exception:
+        return primeiro
+
+agente_classificador = Agent(
+    model=OpenAIChat(id="gpt-4o"),
+    instructions=""" 
+    Você é um classificador de mensagens . 
+    Classifique a mensagem do usuário em UMA das categorias:
+    
+    - SOCIAL: cumprimentos, agradecimentos, despedidas (oi, tchau, obrigado)
+    - MEDICA: perguntas relacionadas à saúde, sintomas, tratamentos
+    - GERAL: outras perguntas não relacionadas à saúde
+    
+    Responda APENAS com a categoria: SOCIAL, MEDICA ou GERAL""",
+    markdown=False,
+)
+
+async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None):
+    # Primeiro, fazer uma busca rápida na base para ver se há conteúdo relevante
+    print("🔍 [DEBUG] Verificando relevância na base local...")
     db = Chroma(persist_directory=CAMINHO_BANCO_DE_DADOS, embedding_function=OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model='text-embedding-3-small'))
+    resultados_busca = db.similarity_search_with_relevance_scores(entrada_usuario, k=2)
+    
+    # Verificar se há conteúdo relevante na base (Chroma usa distância cosine, valores menores = mais similares)
+    tem_conteudo_relevante = resultados_busca and resultados_busca[0][1] > -0.5
+    
+    # Classificar com contexto sobre a base
+    try:
+        contexto_classificacao = ""
+        if tem_conteudo_relevante:
+            contexto_classificacao = "\n\nNOTA: Há documentos relevantes na base de conhecimento para esta pergunta."
+        
+        prompt_classificacao = f"{entrada_usuario}{contexto_classificacao}"
+        resposta = await agente_classificador.arun(prompt_classificacao)
+        categoria = resposta.content.strip().upper()
+        print(f"✅ [DEBUG] Categoria classificada: '{categoria}' (base relevante: {tem_conteudo_relevante})")
+    except Exception:
+        categoria = "MEDICA" if tem_conteudo_relevante else "GERAL"  # Se tem conteúdo relevante, força MEDICA
 
-        # Busca similaridade
-    resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4) # o k é a qtd dos resultadados que vc qr qt mais aumenta mais contexto ele vai usar
+    #  Para SOCIAL, usar modelo com contexto específico
+    if categoria == "SOCIAL":
+        historico_texto = ""
+        if historico_conversa:
+            historico_texto = f"Histórico da conversa:\n{historico_conversa}\n"
+        
+        primeiro_nome = extrair_primeiro_nome(nome_usuario)
+        nome_texto = f"Informação do usuário: O primeiro nome do usuário é {primeiro_nome}.\n" if primeiro_nome else ""
+        
+        prompt_social = f"""Você é a Touch, assistente do Homin focada em saúde do homem.
+        
+        {nome_texto}
+        {historico_texto}
+        
+        O usuário disse: {entrada_usuario}  
+        
+        Responda de forma amigável e natural ao cumprimento/agradecimento/despedida, considerando o contexto da conversa. Use o primeiro nome do usuário quando apropriado para personalizar a resposta. Se apropriado, ofereça ajuda com temas de saúde masculina. Seja calorosa mas mantenha o foco profissional."""
 
-        # Para scores negativos, consideramos relevante se for maior que -0.25
-        # Valores mais próximos de 0 indicam maior relevância
-    if len(resultados) == 0 or resultados[0][1] < -0.25:
-        print("Não conseguiu encontrar nenhuma informação relevante na base")
+        model = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY, temperature=0.3)
+        resposta_social = await model.ainvoke(prompt_social)
+        return resposta_social.content
+
+    # Inicializar contexto_final
+    contexto_final = "Conhecimento geral sobre saúde do homem"
+
+    # GERAL - mas se tem conteúdo relevante trata como MEDICA
+    if categoria == "GERAL" and not tem_conteudo_relevante:
+        contexto_final = "Você é a Touch, focada em saúde do homem. Responda educadamente redirecionando para tópicos de saúde."
+
+    # MEDICA ou GERAL com conteúdo relevante - busca local e web se necessário
     else:
-            print(f"Informações relevantes encontradas! Score: {resultados[0][1]}")
+        # Usar os resultados já obtidos
+        print("🔍 [DEBUG] Fazendo busca detalhada por similaridade...")
+        resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4)
+        
+        # Debug melhorado
+        if resultados:
+            print(f"🔍 [DEBUG] Scores encontrados: {[round(r[1], 3) for r in resultados]}")
 
-    textos_resultado = []
-    if len(resultados) > 0:
-        for resultado in resultados:
-            texto = resultado[0].page_content
-            textos_resultado.append(texto)
-
-        base_conhecimentos = "\n".join(textos_resultado) if textos_resultado else "nenhuma informação encontrada"
-
-        # Busca web se não tiver informações locais suficientes
-        busca_web = ""
-        if len(resultados) == 0 or resultados[0][1] < -0.25:
-            print("Buscando informações na web...")
+        # Se não achou nada bom localmente busca web (Chroma: valores menores = mais similares)
+        if len(resultados) == 0 or resultados[0][1] > -0.3:
+            print("🌍 [DEBUG] Score baixo ou sem resultados - buscando na web...")
             try:
                 agente_busca = Agent(
-                    tools=[DuckDuckGoTools(modifier="Saúde do homem")],
-                    instructions="Busque informações relevantes na web sobre a Saúde do homem"
+                    tools=[DuckDuckGoTools()],
+                    instructions="Busque informações sobre saúde do homem"
                 )
-                resultado_busca = agente_busca.run(f'{entrada_usuario} Saúde do homem')
-                busca_web = f"Informações da web: {resultado_busca.content}"
-            except Exception as e:
-                print(f"Erro ao realizar busca na web: {e}")
-                busca_web = ""
+                resultado = await agente_busca.arun(entrada_usuario)
+                resposta_busca = resultado.content
+            except Exception:
+                resposta_busca = ""
         else:
-            print("Informações locais suficientes encontradas, não buscando na web")
+            resposta_busca = ""
 
-        # Define contexto final
-        if base_conhecimentos:
-            contexto_final = f"Informações dos documentos internos: {base_conhecimentos}"
-        elif busca_web:
-            contexto_final = f"Informações encontradas na web: {busca_web}"
-        else:
-            contexto_final = "Informações gerais sobre saúde do homem."
+        # Definir contexto baseado no que achou (Chroma: valores menores = mais similares)
+        if resultados and resultados[0][1] <= -0.4:
+            contexto_docs = "\n".join([doc[0].page_content for doc in resultados])
+            contexto_final = f"Com base nos documentos internos:\n{contexto_docs}"
+            print("✅ [DEBUG] Usando documentos da base local!")
+        elif resposta_busca:
+            contexto_final = f"Com base em informações encontradas na web:\n{resposta_busca}"
+            print("🌍 [DEBUG] Usando busca web!")
 
-        prompt_resposta_da_ia = f"""
-            Você é a Touch, assistente do Homin, que são estudantes da uninassau que está desenvolvendo dicas de saúde do homem.
-            
-            {contexto_final}
-            
-            Responda à pergunta: {entrada_usuario}
-            
-            IMPORTANTE: Sempre cite a origem das informações quando possível (documentos internos ou informações públicas).
-            
-            Se não houver informações específicas, seja amigável e ofereça ajuda.
-            """
+    # Gerar resposta final
+    historico_texto_final = ""
+    if historico_conversa:
+        historico_texto_final = f"Histórico da conversa:\n{historico_conversa}\n"
 
+    primeiro_nome_final = extrair_primeiro_nome(nome_usuario)
+    nome_texto_final = f"Informação do usuário: O primeiro nome do usuário é {primeiro_nome_final}.\n" if primeiro_nome_final else ""
+    
+    prompt = f"""Você é a Touch, assistente do Homin focada em saúde do homem.
+    
+    {nome_texto_final}
+    {historico_texto_final}
+    
+    {contexto_final}
 
-        model = ChatOpenAI(
-            openai_api_key=OPENAI_API_KEY,
-            model='gpt-4o',
-            temperature=0.5,
-            max_tokens=2000
-        )
+    Pergunta do usuário: {entrada_usuario}
 
-        # vai receber o prompt e todas as mensagens usuário + IA para manter contexto
-        resposta = await model.ainvoke([prompt_resposta_da_ia]+mensagens)
-        return resposta.content
+    Responda de forma clara, amigável, considerando o contexto da conversa anterior. Use o nome do usuário quando apropriado para personalizar a resposta. Cite a fonte das informações quando possível."""
+
+    model = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY, temperature=0)
+    resposta_final = await model.ainvoke(prompt)
+
+    return resposta_final.content

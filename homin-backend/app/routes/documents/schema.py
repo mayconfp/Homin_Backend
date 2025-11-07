@@ -1,10 +1,31 @@
 from pydantic import BaseModel, Field
-
-class DocumentIn(BaseModel):
-    title: str = Field(min_length=1, description="Título do documento")
-    content: str = Field(min_length=1, description="Conteúdo do documento")
+from datetime import datetime
+import uuid
+from typing import Optional, List
 
 class DocumentOut(BaseModel):
-    id: int = Field(description="ID do documento")
-    title: str = Field(description="Título do documento")
-    content: str = Field(description="Conteúdo do documento")
+    id_documento: uuid.UUID
+    id_usuario: uuid.UUID
+    nome_arquivo: str
+    tipo_documento: Optional[str]
+    data_criacao: datetime
+    
+    class Config:
+        from_attributes = True
+
+class DocumentCreate(BaseModel):
+    # Para uploads via UploadFile, não precisa de campos
+    pass
+
+class DocumentList(BaseModel):
+    filename: str
+    size_bytes: int
+
+class DocumentsListResponse(BaseModel):
+    documents: List[DocumentList]
+
+class MessageResponse(BaseModel):
+    message: str
+
+class MessageResponse(BaseModel):
+    message: str

@@ -1,12 +1,13 @@
 
 
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Configurações do banco de dados PostgreSQL
     database_url: str
     db_host: str = "localhost"
     db_port: int = 5432
+    db_name: str
     db_user: str
     db_password: str
     
@@ -15,6 +16,14 @@ class Settings(BaseSettings):
     
     # ChromaDB (banco de vetores para IA)
     chroma_db_path: str = "./banco_de_dados"
+
+    # Configurações Auth0
+    auth0_domain: str
+    auth0_client_id: str
+    auth0_client_secret: str
+    auth0_callback_url: str
+    auth0_audience: str
+    app_secret_key: str
 
     # Configurações de segurança (para autenticação JWT)
     secret_key: str = "dev-secret-key-change-in-production"

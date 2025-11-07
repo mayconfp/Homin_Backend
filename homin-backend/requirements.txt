@@ -4,8 +4,9 @@ uvicorn[standard]==0.37.0
 pydantic==2.10.5
 
 # Database
-sqlalchemy==2.0.36
+sqlalchemy[asyncio]==2.0.36
 psycopg2-binary==2.9.10
+asyncpg==0.29.0
 
 # AI & RAG
 openai==1.58.1
