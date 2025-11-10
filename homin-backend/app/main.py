@@ -23,6 +23,7 @@ app.include_router(ai_router)
 app.include_router(auth_router)
 app.include_router(document_router)
 
+
 # incluir as rotas aqui
 
 

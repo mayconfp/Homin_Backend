@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, desc
 from app.services.ai_service import gerar_resposta
-from app.services.auth import LoggedUserDep, require_permission_new
+from app.services.auth import LoggedUserDep, require_permission
 from app.core.permissions import Permissions
 from app.utils.permission_utils import validate_permission
 from app.utils.deps import SessionDep, LocalUserDep

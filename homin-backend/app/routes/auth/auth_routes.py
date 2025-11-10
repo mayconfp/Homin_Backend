@@ -1,13 +1,16 @@
 # Rotas de autenticação e autorização
 # Endpoints para login, registro, logout, etc.
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
 from app.services.auth import (
     get_login_url,
     exchange_code_for_token,
-    get_user_info
+    get_user_info,
+    sync_user_to_local_db,
+    LoggedUserDep
 )
+from app.utils.deps import SessionDep
 import os
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -25,7 +28,7 @@ async def login():
 
 
 @router.get("/callback")
-async def callback(request: Request, code: str = None):
+async def callback(request: Request, db_session: SessionDep, code: str = None):
     if not code:
         return JSONResponse(status_code=400, content={"error": "Código de autorização ausente"})
 
@@ -33,12 +36,30 @@ async def callback(request: Request, code: str = None):
         token_data = exchange_code_for_token(code)
         user_info = get_user_info(token_data["access_token"])
 
-        # Aqui você pode salvar o usuário no banco, criar sessão JWT etc.
+        # Sincronizar usuário com base local usando dados completos do userinfo
+        if user_info.get("email"):
+            # Criar payload com dados do userinfo + permissões do access_token
+            from app.utils.deps import verify_jwt
+            access_payload = verify_jwt(token_data["access_token"])
+            
+            user_payload = {
+                "email": user_info["email"],
+                "name": user_info.get("name", user_info.get("email")),
+                "sub": user_info["sub"],  # ← ADICIONADO: incluir sub do userinfo
+                "permissions": access_payload.get("permissions", [])
+            }
+            
+            await sync_user_to_local_db(user_payload, db_session)
+
         return JSONResponse(
             content={
                 "message": "Login bem-sucedido!",
                 "user": user_info,
-                "tokens": token_data
+                "tokens": token_data,
+                "sync_info": {
+                    "email": user_info.get("email"),
+                    "permissions": verify_jwt(token_data["access_token"]).get("permissions", [])
+                }
             }
         )
     except Exception as e:
@@ -54,10 +75,15 @@ async def logout():
     )
     return RedirectResponse(url=logout_url)
 
-# @router.get("/me")
-# async def get_current_user():
-#     """Endpoint para obter dados do usuário atual"""
-#     pass
+
+@router.get("/me")
+async def get_current_user_info(user: LoggedUserDep):
+    """Endpoint para obter dados do usuário atual"""
+    return {
+        "user": user,
+        "message": "Dados do usuário atual"
+    }
+
 
 # @router.post("/refresh-token")
 # async def refresh_token():
