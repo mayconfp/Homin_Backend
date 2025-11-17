@@ -26,13 +26,21 @@ security = HTTPBearer()
 
 def get_login_url():
     """Gera a URL de login do Auth0 (com Google)"""
+    # Seleciona callback de acordo com o ambiente
+    callback_url = os.getenv("AUTH0_CALLBACK_URL")
+    if not callback_url:
+        if os.getenv("ENVIRONMENT") == "production":
+            callback_url = "https://api.hominsaude.cloud/auth/callback"
+        else:
+            callback_url = "http://localhost:8000/auth/callback"
+
     return (
         f"https://{AUTH0_DOMAIN}/authorize"
         f"?response_type=code"
         f"&client_id={AUTH0_CLIENT_ID}"
-        f"&redirect_uri={AUTH0_CALLBACK_URL}"
+        f"&redirect_uri={callback_url}"
         f"&scope=openid profile email"
-        f"&audience={AUTH0_AUDIENCE}"  # para quais servico o token e valido
+        f"&audience={AUTH0_AUDIENCE}"
         f"&connection=google-oauth2"
     )
 
