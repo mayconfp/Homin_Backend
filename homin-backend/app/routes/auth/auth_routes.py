@@ -88,15 +88,21 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
             # fallback para variável de ambiente FRONTEND_URL ou default 5173
             redirect_target = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
-        response = RedirectResponse(url=redirect_target)
+        # Adiciona token na URL de redirect para compatibilidade com front
+        # que espera receber ?token=... (ex.: AuthContext lendo query param).
+        token = token_data.get("access_token")
+        separator = "&" if "?" in redirect_target else "?"
+        final_url = f"{redirect_target}{separator}token={token}"
 
-        # Configurar cookie HttpOnly com o access token (mais seguro que enviar token no body)
+        response = RedirectResponse(url=final_url)
+
+        # Configurar cookie HttpOnly com o access token (backup/segurança)
         secure_flag = os.getenv("ENVIRONMENT") == "production"
         expires = int(token_data.get("expires_in", 3600))
 
         response.set_cookie(
             key="access_token",
-            value=token_data.get("access_token"),
+            value=token,
             httponly=True,
             secure=secure_flag,
             samesite="lax",
