@@ -67,13 +67,14 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
 
 
 @router.get("/logout")
-async def logout():
+def logout():
+    return_to = os.getenv("LOGOUT_RETURN_TO", "http://localhost:8000")
     logout_url = (
         f"https://{os.getenv('AUTH0_DOMAIN')}/v2/logout?"
         f"client_id={os.getenv('AUTH0_CLIENT_ID')}"
-        f"&returnTo=http://localhost:8000"
+        f"&returnTo={return_to}"
     )
-    return RedirectResponse(url=logout_url)
+    return RedirectResponse(logout_url)
 
 
 @router.get("/me")
