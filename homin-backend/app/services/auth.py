@@ -25,7 +25,7 @@ AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE")
 security = HTTPBearer(auto_error=False)
 
 
-def get_login_url(state: str | None = None):
+def get_login_url(state: str | None = None, raw: bool = False):
     """Gera a URL de login do Auth0 (com Google).
 
     Se `state` for fornecido, será adicionado ao parâmetro `state` da URL
@@ -38,6 +38,14 @@ def get_login_url(state: str | None = None):
             callback_url = "https://api.hominsaude.cloud/auth/callback"
         else:
             callback_url = "http://localhost:8000/auth/callback"
+
+    # If raw mode requested, instruct callback to keep raw flag so it can return tokens as JSON
+    if raw:
+        # append raw=1 to callback URL query
+        if "?" in callback_url:
+            callback_url = f"{callback_url}&raw=1"
+        else:
+            callback_url = f"{callback_url}?raw=1"
 
     url = (
         f"https://{AUTH0_DOMAIN}/authorize"
