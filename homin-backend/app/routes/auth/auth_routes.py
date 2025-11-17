@@ -3,12 +3,15 @@
 
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
+from urllib.parse import quote_plus, unquote_plus
+import base64
+
 from app.services.auth import (
     get_login_url,
     exchange_code_for_token,
     get_user_info,
     sync_user_to_local_db,
-    LoggedUserDep
+    LoggedUserDep,
 )
 from app.utils.deps import SessionDep
 import os
@@ -22,8 +25,21 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 #     pass
 
 @router.get("/login")
-async def login():
-    url = get_login_url()
+async def login(next: str | None = None):
+    """
+    Inicia o fluxo de login. O frontend pode passar `next` (ex: `http://localhost:5173`)
+    para que, após o callback, o backend redirecione o usuário de volta.
+
+    O valor de `next` é passado via `state` para o provedor (Auth0) e será
+    validado no callback antes do redirect final.
+    """
+    state_value = None
+    if next:
+        # codifica o retorno para incluir no state (base64 urlsafe)
+        encoded = base64.urlsafe_b64encode(next.encode()).decode()
+        state_value = quote_plus(encoded)
+
+    url = get_login_url(state=state_value)
     return RedirectResponse(url=url)
 
 
@@ -45,23 +61,49 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
             user_payload = {
                 "email": user_info["email"],
                 "name": user_info.get("name", user_info.get("email")),
-                "sub": user_info["sub"],  # ← ADICIONADO: incluir sub do userinfo
+                "sub": user_info["sub"],
                 "permissions": access_payload.get("permissions", [])
             }
             
             await sync_user_to_local_db(user_payload, db_session)
 
-        return JSONResponse(
-            content={
-                "message": "Login bem-sucedido!",
-                "user": user_info,
-                "tokens": token_data,
-                "sync_info": {
-                    "email": user_info.get("email"),
-                    "permissions": verify_jwt(token_data["access_token"]).get("permissions", [])
-                }
-            }
+        # Se o provedor retornou um 'state', tentar decodificar o return URL.
+        state = request.query_params.get("state")
+        return_to = None
+        if state:
+            try:
+                decoded = unquote_plus(state)
+                return_to = base64.urlsafe_b64decode(decoded.encode()).decode()
+            except Exception:
+                # se falhar, ignora e usa fallback
+                return_to = None
+
+        # validação de segurança: allowlist de redirect URIs
+        allowed = os.getenv("ALLOWED_REDIRECTS", "http://localhost:5173,http://localhost:3000")
+        allowed_list = [u.strip() for u in allowed.split(",") if u.strip()]
+
+        if return_to and any(return_to.startswith(a) for a in allowed_list):
+            redirect_target = return_to
+        else:
+            # fallback para variável de ambiente FRONTEND_URL ou default 5173
+            redirect_target = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
+        response = RedirectResponse(url=redirect_target)
+
+        # Configurar cookie HttpOnly com o access token (mais seguro que enviar token no body)
+        secure_flag = os.getenv("ENVIRONMENT") == "production"
+        expires = int(token_data.get("expires_in", 3600))
+
+        response.set_cookie(
+            key="access_token",
+            value=token_data.get("access_token"),
+            httponly=True,
+            secure=secure_flag,
+            samesite="lax",
+            max_age=expires,
         )
+
+        return response
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
 

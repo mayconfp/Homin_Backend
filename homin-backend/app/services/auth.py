@@ -21,11 +21,16 @@ AUTH0_CALLBACK_URL = os.getenv("AUTH0_CALLBACK_URL")
 AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE")
 
 # Segurança
-security = HTTPBearer()
+# Permitir ausência do header Authorization para usar fallback via cookie
+security = HTTPBearer(auto_error=False)
 
 
-def get_login_url():
-    """Gera a URL de login do Auth0 (com Google)"""
+def get_login_url(state: str | None = None):
+    """Gera a URL de login do Auth0 (com Google).
+
+    Se `state` for fornecido, será adicionado ao parâmetro `state` da URL
+    do Auth0 para que o callback possa redirecionar de volta ao front.
+    """
     # Seleciona callback de acordo com o ambiente
     callback_url = os.getenv("AUTH0_CALLBACK_URL")
     if not callback_url:
@@ -34,7 +39,7 @@ def get_login_url():
         else:
             callback_url = "http://localhost:8000/auth/callback"
 
-    return (
+    url = (
         f"https://{AUTH0_DOMAIN}/authorize"
         f"?response_type=code"
         f"&client_id={AUTH0_CLIENT_ID}"
@@ -43,6 +48,12 @@ def get_login_url():
         f"&audience={AUTH0_AUDIENCE}"
         f"&connection=google-oauth2"
     )
+
+    if state:
+        # state deve estar URL-encoded pelo caller
+        url = f"{url}&state={state}"
+
+    return url
 
 
 def exchange_code_for_token(code: str):
@@ -75,7 +86,7 @@ def get_user_info(access_token: str):
     return response.json()
 
 
-# ========== DEPENDÊNCIAS PARA PROTEÇÃO DE ROTAS ==========
+# DEPENDÊNCIAS PARA PROTEÇÃO DE ROTAS
 
 def get_user_permissions_from_auth0(access_token: str):
     """Obtém as permissões/roles do usuário do Auth0"""
@@ -195,16 +206,31 @@ async def sync_user_to_local_db(payload: Dict, db_session: SessionDep, access_to
 
 async def get_current_user(
     db_session: SessionDep,
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict:
-    """Obtém o usuário atual validando o JWT + sincroniza na base local"""
-    token = credentials.credentials
+    """Obtém o usuário atual validando o JWT + sincroniza na base local.
+
+    Primeiro tenta o header Authorization (Bearer). Se não houver, faz fallback
+    para o cookie `access_token` definido pelo callback.
+    """
+    token = None
+
+    # Preferir o header Authorization
+    if credentials and getattr(credentials, "credentials", None):
+        token = credentials.credentials
+    else:
+        # Fallback para cookie
+        token = request.cookies.get("access_token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+
     payload = verify_jwt(token)
-    
+
     # Sincronizar com base local (em background, sem bloquear)
-    # Usar o próprio token JWT como access_token para buscar permissões
     await sync_user_to_local_db(payload, db_session, access_token=token)
-    
+
     return payload
 
 
