@@ -2,7 +2,7 @@ import os
 import json
 import requests
 from typing import Annotated, AsyncGenerator, Dict
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio.session import AsyncSession
@@ -19,7 +19,7 @@ AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN")
 AUTH0_CLIENT_ID = os.getenv("AUTH0_CLIENT_ID")
 AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", f"https://{AUTH0_DOMAIN}/api/v2/")
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 def verify_jwt(token: str):
     """Verifica e decodifica um JWT emitido pelo Auth0"""
@@ -107,17 +107,33 @@ async def sync_user_to_local_db(token: str, payload: Dict, db_session: AsyncSess
 
 async def get_logged_user(
     db_session: "SessionDep",
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict:
     """Obter usuário logado validando Auth0 JWT + sincronizar na base local"""
     try:
-        token = credentials.credentials
+        token = None
+        if credentials and getattr(credentials, "credentials", None):
+            token = credentials.credentials
+        else:
+            # fallback para cookie (usado por frontend no callback)
+            token = request.cookies.get("access_token")
+
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token não fornecido",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         payload = verify_jwt(token)
-        
+
         # Sincronizar com base local (não bloqueia se der erro)
         await sync_user_to_local_db(token, payload, db_session)
-        
+
         return payload
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -127,17 +143,36 @@ async def get_logged_user(
 
 async def get_local_user(
     db_session: "SessionDep",
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Usuario:
-    """Obter objeto Usuario da base local após validação Auth0"""
+    """Obter objeto `Usuario` da base local após validação Auth0.
+
+    Aceita token via header `Authorization: Bearer <token>` preferencialmente,
+    com fallback para cookie `access_token` (para compatibilidade com callback).
+    """
     try:
-        token = credentials.credentials
+        token = None
+        if credentials and getattr(credentials, "credentials", None):
+            token = credentials.credentials
+        else:
+            token = request.cookies.get("access_token")
+
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token não fornecido",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         payload = verify_jwt(token)
-        
+
         # Sincronizar com base local e retornar objeto Usuario
         user = await sync_user_to_local_db(token, payload, db_session)
-        
+
         return user
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -149,3 +184,17 @@ async def get_local_user(
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 LoggedUserDep = Annotated[Dict, Depends(get_logged_user)]
 LocalUserDep = Annotated[Usuario, Depends(get_local_user)]
+
+
+# Permissões: helper para usar em routes (compatível com validate_permission)
+from app.core.permissions import Permissions
+from app.utils.permission_utils import validate_permission
+
+
+def require_permission(permission: Permissions):
+    """Factory que retorna uma dependency que valida a permissão e retorna o user payload"""
+    async def check_permission(user_data: Dict = Depends(LoggedUserDep)):
+        await validate_permission(user_data, permission)
+        return user_data
+
+    return check_permission

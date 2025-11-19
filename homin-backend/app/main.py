@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routes.rag.ai_routes import router as ai_router
 from app.routes.auth.auth_routes import router as auth_router
 from app.routes.documents.document_routes import router as document_router
+from app.config import settings
 
 # Inicialização do app FastAPI
 app = FastAPI(
@@ -17,7 +18,7 @@ app = FastAPI(
 # Configurar CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8080"],  # URLs do frontend
+    allow_origins=settings.cors_origins,  # use configured origins (includes localhost:5173)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

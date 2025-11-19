@@ -20,6 +20,8 @@ class DocumentCreate(BaseModel):
 class DocumentList(BaseModel):
     filename: str
     size_bytes: int
+    in_db: bool = False
+    on_disk: bool = False
 
 class DocumentsListResponse(BaseModel):
     documents: List[DocumentList]

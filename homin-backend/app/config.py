@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     
     # CORS
-    cors_origins: list = ["http://localhost:3000", "http://localhost:8000"]
+    cors_origins: list = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8000"]
 
     class Config:
         env_file = ".env"

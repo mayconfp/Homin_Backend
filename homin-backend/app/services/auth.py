@@ -20,16 +20,15 @@ AUTH0_CLIENT_SECRET = os.getenv("AUTH0_CLIENT_SECRET")
 AUTH0_CALLBACK_URL = os.getenv("AUTH0_CALLBACK_URL")
 AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE")
 
-# Segurança
-# Permitir ausência do header Authorization para usar fallback via cookie
-security = HTTPBearer(auto_error=False)
+# Segurança (a verificação de token e sincronização foi consolidada em `app.utils.deps`)
 
 
-def get_login_url(state: str | None = None, raw: bool = False):
+def get_login_url(state: str | None = None):
     """Gera a URL de login do Auth0 (com Google).
 
     Se `state` for fornecido, será adicionado ao parâmetro `state` da URL
     do Auth0 para que o callback possa redirecionar de volta ao front.
+    (Nota: o parâmetro `raw` foi removido — retornos JSON expostos não são seguros.)
     """
     # Seleciona callback de acordo com o ambiente
     callback_url = os.getenv("AUTH0_CALLBACK_URL")
@@ -39,13 +38,8 @@ def get_login_url(state: str | None = None, raw: bool = False):
         else:
             callback_url = "http://localhost:8000/auth/callback"
 
-    # If raw mode requested, instruct callback to keep raw flag so it can return tokens as JSON
-    if raw:
-        # append raw=1 to callback URL query
-        if "?" in callback_url:
-            callback_url = f"{callback_url}&raw=1"
-        else:
-            callback_url = f"{callback_url}?raw=1"
+    # NOTE: previously supported a `raw` flag to return tokens as JSON in dev.
+    # That behavior was removed for security and simplicity.
 
     url = (
         f"https://{AUTH0_DOMAIN}/authorize"
@@ -132,124 +126,3 @@ def get_user_permissions_from_auth0(access_token: str):
         print(f"⚠️ Erro ao obter permissões do Auth0: {e}")
     
     return 'user'  # fallback
-
-
-async def sync_user_to_local_db(payload: Dict, db_session: SessionDep, access_token: str = None) -> None:
-    """Sincroniza usuário do Auth0 para a base local (não bloqueia se der erro)"""
-    try:
-        # Extrair dados essenciais
-        email = payload.get("email")
-        nome = payload.get("name", payload.get("given_name", ""))
-        auth0_sub = payload.get("sub")
-        permissions = payload.get("permissions", [])
-        
-        if not auth0_sub:
-            print(f"⚠️ Sub ausente - não é possível sincronizar. Payload: {payload}")
-            return
-        
-        # Determinar role baseado nas permissões
-        user_role = 'user'  # default
-        if 'admin:documents' in permissions:
-            user_role = 'admin'
-        
-        # Buscar usuário por auth0_sub (sempre disponível) ou email (se presente)
-        if email:
-            stmt = select(Usuario).where(
-                (Usuario.email == email) | (Usuario.auth0_sub == auth0_sub)
-            )
-        else:
-            stmt = select(Usuario).where(Usuario.auth0_sub == auth0_sub)
-        
-        user = await db_session.scalar(stmt)
-        
-        if not user:
-            # Se não tem email (JWT), não criar usuário - só no callback
-            if not email:
-                print(f"ℹ️ Usuário {auth0_sub} não encontrado na base local. Aguardando callback com email.")
-                return
-                
-            # Primeira vez: criar usuário (só no callback quando tem email)
-            user = Usuario(
-                email=email,
-                nome=nome or email,
-                auth0_sub=auth0_sub,
-                role=user_role
-            )
-            db_session.add(user)
-            await db_session.commit()
-            print(f"✅ Novo usuário criado: {email} (role: {user_role}, sub: {auth0_sub})")
-        else:
-            # Atualizar dados se mudaram
-            updated = False
-            
-            # Atualizar email/nome apenas se vieram no payload (callback)
-            if email and user.email != email:
-                user.email = email
-                updated = True
-                
-            if nome and user.nome != nome:
-                user.nome = nome
-                updated = True
-                
-            # Atualizar auth0_sub se necessário
-            if user.auth0_sub != auth0_sub:
-                user.auth0_sub = auth0_sub
-                updated = True
-                
-            # Sempre atualizar role baseado nas permissions atuais
-            if user.role != user_role:
-                old_role = user.role
-                user.role = user_role
-                updated = True
-                print(f"✅ Role atualizado para {user.email or auth0_sub}: {old_role} -> {user_role}")
-            
-            if updated:
-                await db_session.commit()
-                print(f"✅ Usuário atualizado: {user.email or auth0_sub}")
-                
-    except Exception as e:
-        print(f"⚠️ Erro ao sincronizar usuário na base local: {e}")
-        # Não falha - continua com auth normal
-
-
-async def get_current_user(
-    db_session: SessionDep,
-    request: Request,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-) -> Dict:
-    """Obtém o usuário atual validando o JWT + sincroniza na base local.
-
-    Primeiro tenta o header Authorization (Bearer). Se não houver, faz fallback
-    para o cookie `access_token` definido pelo callback.
-    """
-    token = None
-
-    # Preferir o header Authorization
-    if credentials and getattr(credentials, "credentials", None):
-        token = credentials.credentials
-    else:
-        # Fallback para cookie
-        token = request.cookies.get("access_token")
-
-    if not token:
-        raise HTTPException(status_code=401, detail="Token não fornecido")
-
-    payload = verify_jwt(token)
-
-    # Sincronizar com base local (em background, sem bloquear)
-    await sync_user_to_local_db(payload, db_session, access_token=token)
-
-    return payload
-
-
-# Tipo de dependência injection
-LoggedUserDep = Annotated[Dict, Depends(get_current_user)]
-
-
-def require_permission(permission: Permissions):
-    """Factory para criar dependency que valida uma permissão específica"""
-    async def check_permission(user: LoggedUserDep):
-        from app.utils.permission_utils import validate_permission
-        await validate_permission(user, permission)
-        return user
-    return check_permission

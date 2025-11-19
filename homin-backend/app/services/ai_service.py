@@ -48,9 +48,24 @@ agente_classificador = Agent(
 async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None):
     # Primeiro, fazer uma busca rápida na base para ver se há conteúdo relevante
     print("🔍 [DEBUG] Verificando relevância na base local...")
-    db = Chroma(persist_directory=CAMINHO_BANCO_DE_DADOS, embedding_function=OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model='text-embedding-3-small'))
-    resultados_busca = db.similarity_search_with_relevance_scores(entrada_usuario, k=2)
-    
+    db = None
+    try:
+        db = Chroma(
+            persist_directory=CAMINHO_BANCO_DE_DADOS,
+            embedding_function=OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model='text-embedding-3-small'),
+        )
+    except Exception as e:
+        print(f"⚠️ Falha ao inicializar Chroma/Chromadb: {e}")
+        print("⚠️ Continuando sem base local (fallback). Para restaurar, verifique chroma.sqlite3 ou reinstale chromadb/langchain-chroma")
+
+    resultados_busca = []
+    if db is not None:
+        try:
+            resultados_busca = db.similarity_search_with_relevance_scores(entrada_usuario, k=2)
+        except Exception as e:
+            print(f"⚠️ Erro ao buscar similaridade na base local: {e}")
+            resultados_busca = []
+
     # Verificar se há conteúdo relevante na base (Chroma usa distância cosine, valores menores = mais similares)
     tem_conteudo_relevante = resultados_busca and resultados_busca[0][1] > -0.5
     
@@ -100,11 +115,19 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
     else:
         # Usar os resultados já obtidos
         print("🔍 [DEBUG] Fazendo busca detalhada por similaridade...")
-        resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4)
-        
-        # Debug melhorado
+        resultados = []
+        if db is not None:
+            try:
+                resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4)
+            except Exception as e:
+                print(f"⚠️ Erro ao buscar similaridade detalhada: {e}")
+                resultados = []
+
         if resultados:
-            print(f"🔍 [DEBUG] Scores encontrados: {[round(r[1], 3) for r in resultados]}")
+            try:
+                print(f"🔍 [DEBUG] Scores encontrados: {[round(r[1], 3) for r in resultados]}")
+            except Exception:
+                pass
 
         # Se não achou nada bom localmente busca web (Chroma: valores menores = mais similares)
         if len(resultados) == 0 or resultados[0][1] > -0.3:
