@@ -10,10 +10,8 @@ from app.services.auth import (
     get_login_url,
     exchange_code_for_token,
     get_user_info,
-    sync_user_to_local_db,
-    LoggedUserDep,
 )
-from app.utils.deps import SessionDep
+from app.utils.deps import SessionDep, sync_user_to_local_db, LoggedUserDep, LocalUserDep
 import os
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -65,7 +63,8 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
                 "permissions": access_payload.get("permissions", [])
             }
             
-            await sync_user_to_local_db(user_payload, db_session)
+            # sync_user_to_local_db signature: (token, payload, db_session)
+            await sync_user_to_local_db(token_data.get("access_token"), user_payload, db_session)
 
         # Se o provedor retornou um 'state', tentar decodificar o return URL.
         state = request.query_params.get("state")
@@ -126,11 +125,40 @@ def logout():
 
 
 @router.get("/me")
-async def get_current_user_info(user: LoggedUserDep):
-    """Endpoint para obter dados do usuário atual"""
+async def get_current_user_info(
+    auth_payload: LoggedUserDep,
+    local_user: LocalUserDep,
+):
+    #Endpoint para obter dados do usuário atual.
+
+    #Retorna informação amigável username baseada no usuário local quando disponível
+    username = None
+    try:
+        if getattr(local_user, "nome", None):
+            username = local_user.nome
+        elif getattr(local_user, "email", None):
+            username = local_user.email
+    except Exception:
+        username = None
+
+    # Fallback para claims caso usuário local não tenha nome
+    if not username:
+        username = (
+            auth_payload.get("name")
+            or auth_payload.get("nickname")
+            or auth_payload.get("preferred_username")
+            or auth_payload.get("email")
+            or auth_payload.get("sub")
+        )
+
     return {
-        "user": user,
-        "message": "Dados do usuário atual"
+        "user": {
+            "username": username,
+            "email": auth_payload.get("email") or getattr(local_user, "email", None),
+            "role": getattr(local_user, "role", None),
+            "sub": auth_payload.get("sub"),
+        },
+        "claims": auth_payload,
     }
 
 
