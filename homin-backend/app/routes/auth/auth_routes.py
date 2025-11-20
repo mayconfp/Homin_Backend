@@ -81,7 +81,7 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
         # Permitimos qualquer porta para hosts permitidos (compara por hostname apenas)
         allowed = os.getenv(
             "ALLOWED_REDIRECTS",
-            "http://localhost:5173,http://localhost:3000,https://hominsaude.cloud",
+            "http://localhost:5173,http://localhost:3000,https://www.hominsaude.cloud",
         )
         allowed_hosts = set()
         for u in [s.strip() for s in allowed.split(",") if s.strip()]:
