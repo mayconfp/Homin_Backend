@@ -3,7 +3,7 @@
 
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
-from urllib.parse import quote_plus, unquote_plus
+from urllib.parse import quote_plus, unquote_plus, urlparse
 import base64
 
 from app.services.auth import (
@@ -78,14 +78,33 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
                 return_to = None
 
         # validação de segurança: allowlist de redirect URIs
-        allowed = os.getenv("ALLOWED_REDIRECTS", "http://localhost:5173,http://localhost:3000")
-        allowed_list = [u.strip() for u in allowed.split(",") if u.strip()]
+        # Permitimos qualquer porta para hosts permitidos (compara por hostname apenas)
+        allowed = os.getenv(
+            "ALLOWED_REDIRECTS",
+            "http://localhost:5173,http://localhost:3000,https://hominsaude.cloud",
+        )
+        allowed_hosts = set()
+        for u in [s.strip() for s in allowed.split(",") if s.strip()]:
+            try:
+                p = urlparse(u if "://" in u else f"//{u}")
+                if p.hostname:
+                    allowed_hosts.add(p.hostname.lower())
+            except Exception:
+                continue
 
-        if return_to and any(return_to.startswith(a) for a in allowed_list):
-            redirect_target = return_to
-        else:
-            # fallback para variável de ambiente FRONTEND_URL ou default 5173
-            redirect_target = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        redirect_target = None
+        if return_to:
+            try:
+                parsed = urlparse(return_to)
+                host = parsed.hostname.lower() if parsed.hostname else None
+                if host and host in allowed_hosts:
+                    redirect_target = return_to
+            except Exception:
+                redirect_target = None
+
+        if not redirect_target:
+            # fallback para variável de ambiente FRONTEND_URL ou default produção
+            redirect_target = os.getenv("FRONTEND_URL", "https://hominsaude.cloud")
 
         # Adiciona token na URL de redirect para compatibilidade com front
         # que espera receber ?token=... (ex.: AuthContext lendo query param).
