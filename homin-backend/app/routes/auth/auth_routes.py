@@ -104,7 +104,7 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
 
         if not redirect_target:
             # fallback para variável de ambiente FRONTEND_URL ou default produção
-            redirect_target = os.getenv("FRONTEND_URL", "https://hominsaude.cloud")
+            redirect_target = os.getenv("FRONTEND_URL", "https://www.hominsaude.cloud")
 
         # Adiciona token na URL de redirect para compatibilidade com front
         # que espera receber ?token=... (ex.: AuthContext lendo query param).
