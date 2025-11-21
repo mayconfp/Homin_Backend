@@ -17,6 +17,7 @@ CAMINHO_BANCO_DE_DADOS = os.path.join(os.path.dirname(os.path.dirname(__file__))
 
 load_dotenv()
 OPENAI_API_KEY=os.getenv("OPENAI_API_KEY")
+CHROMA_SCORE_THRESHOLD=float(os.getenv("CHROMA_SCORE_THRESHOLD", "-0.4"))
 
 
 def extrair_primeiro_nome(nome: str | None) -> str | None:
@@ -47,7 +48,7 @@ agente_classificador = Agent(
 
 async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None):
     # Primeiro, fazer uma busca rápida na base para ver se há conteúdo relevante
-    print("🔍 [DEBUG] Verificando relevância na base local...")
+    print("[DEBUG] Verificando relevância na base local...")
     db = None
     try:
         db = Chroma(
@@ -55,19 +56,24 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
             embedding_function=OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model='text-embedding-3-small'),
         )
     except Exception as e:
-        print(f"⚠️ Falha ao inicializar Chroma/Chromadb: {e}")
-        print("⚠️ Continuando sem base local (fallback). Para restaurar, verifique chroma.sqlite3 ou reinstale chromadb/langchain-chroma")
+        print(f"Falha ao inicializar Chroma/Chromadb: {e}")
+        print("Continuando sem base local (fallback). Para restaurar, verifique chroma.sqlite3 ou reinstale chromadb/langchain-chroma")
 
     resultados_busca = []
     if db is not None:
         try:
             resultados_busca = db.similarity_search_with_relevance_scores(entrada_usuario, k=2)
         except Exception as e:
-            print(f"⚠️ Erro ao buscar similaridade na base local: {e}")
+            print(f"Erro ao buscar similaridade na base local: {e}")
             resultados_busca = []
 
     # Verificar se há conteúdo relevante na base (Chroma usa distância cosine, valores menores = mais similares)
-    tem_conteudo_relevante = resultados_busca and resultados_busca[0][1] > -0.5
+    # Usamos um threshold configurável (valor negativo nas instâncias atuais)
+    tem_conteudo_relevante = False
+    try:
+        tem_conteudo_relevante = bool(resultados_busca and resultados_busca[0][1] >= CHROMA_SCORE_THRESHOLD)
+    except Exception:
+        tem_conteudo_relevante = bool(resultados_busca)
     
     # Classificar com contexto sobre a base
     try:
@@ -78,7 +84,7 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
         prompt_classificacao = f"{entrada_usuario}{contexto_classificacao}"
         resposta = await agente_classificador.arun(prompt_classificacao)
         categoria = resposta.content.strip().upper()
-        print(f"✅ [DEBUG] Categoria classificada: '{categoria}' (base relevante: {tem_conteudo_relevante})")
+        print(f"[DEBUG] Categoria classificada: '{categoria}' (base relevante: {tem_conteudo_relevante})")
     except Exception:
         categoria = "MEDICA" if tem_conteudo_relevante else "GERAL"  # Se tem conteúdo relevante, força MEDICA
 
@@ -114,24 +120,26 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
     # MEDICA ou GERAL com conteúdo relevante - busca local e web se necessário
     else:
         # Usar os resultados já obtidos
-        print("🔍 [DEBUG] Fazendo busca detalhada por similaridade...")
+        print("[DEBUG] Fazendo busca detalhada por similaridade...")
         resultados = []
         if db is not None:
             try:
                 resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4)
             except Exception as e:
-                print(f"⚠️ Erro ao buscar similaridade detalhada: {e}")
+                print(f"Erro ao buscar similaridade detalhada: {e}")
                 resultados = []
 
         if resultados:
             try:
-                print(f"🔍 [DEBUG] Scores encontrados: {[round(r[1], 3) for r in resultados]}")
+                print(f"[DEBUG] Scores encontrados: {[round(r[1], 3) for r in resultados]}")
             except Exception:
                 pass
 
-        # Se não achou nada bom localmente busca web (Chroma: valores menores = mais similares)
-        if len(resultados) == 0 or resultados[0][1] > -0.3:
-            print("🌍 [DEBUG] Score baixo ou sem resultados - buscando na web...")
+        # Se não achou nada bom localmente busca web (usando o threshold configurável)
+        top_score = resultados[0][1] if resultados else None
+        print(f"[DEBUG] Top raw score: {top_score} threshold: {CHROMA_SCORE_THRESHOLD}")
+        if len(resultados) == 0 or (top_score is not None and top_score < CHROMA_SCORE_THRESHOLD):
+            print("🌍 [DEBUG] Score local abaixo do threshold - buscando na web...")
             try:
                 agente_busca = Agent(
                     tools=[DuckDuckGoTools()],
@@ -143,15 +151,14 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
                 resposta_busca = ""
         else:
             resposta_busca = ""
-
-        # Definir contexto baseado no que achou (Chroma: valores menores = mais similares)
-        if resultados and resultados[0][1] <= -0.4:
+        # Definir contexto baseado no que achou usando o mesmo threshold
+        if resultados and (resultados[0][1] is not None and resultados[0][1] >= CHROMA_SCORE_THRESHOLD):
             contexto_docs = "\n".join([doc[0].page_content for doc in resultados])
             contexto_final = f"Com base nos documentos internos:\n{contexto_docs}"
-            print("✅ [DEBUG] Usando documentos da base local!")
+            print("[DEBUG] Usando documentos da base local!")
         elif resposta_busca:
             contexto_final = f"Com base em informações encontradas na web:\n{resposta_busca}"
-            print("🌍 [DEBUG] Usando busca web!")
+            print("[DEBUG] Usando busca web!")
 
     # Gerar resposta final
     historico_texto_final = ""
@@ -170,7 +177,7 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
 
     Pergunta do usuário: {entrada_usuario}
 
-    Responda de forma clara, amigável, considerando o contexto da conversa anterior. Use o nome do usuário quando apropriado para personalizar a resposta. Cite a fonte das informações quando possível."""
+    Responda de forma clara, amigável, considerando o contexto da conversa anterior. Use o nome do usuário quando apropriado para personalizar a resposta. Cite sempre a fonte das informações."""
 
     model = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY, temperature=0)
     resposta_final = await model.ainvoke(prompt)
