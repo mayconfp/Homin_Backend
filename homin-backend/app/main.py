@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routes.rag.ai_routes import router as ai_router
 from app.routes.auth.auth_routes import router as auth_router
 from app.routes.documents.document_routes import router as document_router
+from app.routes.account.account_routes import router as account_router
 from app.config import settings
 
 # Inicialização do app FastAPI
@@ -40,6 +41,7 @@ async def root():
 
 app.include_router(ai_router)
 app.include_router(auth_router)
+app.include_router(account_router)
 app.include_router(document_router)
 
 

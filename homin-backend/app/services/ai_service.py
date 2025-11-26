@@ -17,6 +17,10 @@ CAMINHO_BANCO_DE_DADOS = os.path.join(os.path.dirname(os.path.dirname(__file__))
 
 load_dotenv()
 OPENAI_API_KEY=os.getenv("OPENAI_API_KEY")
+# Thresholds para estratégia híbrida
+SCORE_EXCELENTE = -0.25  # >= -0.25: só base local (excelente)
+SCORE_ACEITAVEL = -0.45  # >= -0.45: local + web (aceitável/médio) - ajustado para capturar mais conteúdo relevante
+                         # < -0.45: só web (ruim)
 
 
 def extrair_primeiro_nome(nome: str | None) -> str | None:
@@ -47,7 +51,7 @@ agente_classificador = Agent(
 
 async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None):
     # Primeiro, fazer uma busca rápida na base para ver se há conteúdo relevante
-    print("🔍 [DEBUG] Verificando relevância na base local...")
+    print("[DEBUG] Verificando relevância na base local...")
     db = None
     try:
         db = Chroma(
@@ -55,19 +59,24 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
             embedding_function=OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model='text-embedding-3-small'),
         )
     except Exception as e:
-        print(f"⚠️ Falha ao inicializar Chroma/Chromadb: {e}")
-        print("⚠️ Continuando sem base local (fallback). Para restaurar, verifique chroma.sqlite3 ou reinstale chromadb/langchain-chroma")
+        print(f"Falha ao inicializar Chroma/Chromadb: {e}")
+        print("Continuando sem base local (fallback). Para restaurar, verifique chroma.sqlite3 ou reinstale chromadb/langchain-chroma")
 
     resultados_busca = []
     if db is not None:
         try:
             resultados_busca = db.similarity_search_with_relevance_scores(entrada_usuario, k=2)
         except Exception as e:
-            print(f"⚠️ Erro ao buscar similaridade na base local: {e}")
+            print(f"Erro ao buscar similaridade na base local: {e}")
             resultados_busca = []
 
     # Verificar se há conteúdo relevante na base (Chroma usa distância cosine, valores menores = mais similares)
-    tem_conteudo_relevante = resultados_busca and resultados_busca[0][1] > -0.5
+    # Usamos SCORE_ACEITAVEL para classificação inicial (aceita médio e excelente)
+    tem_conteudo_relevante = False
+    try:
+        tem_conteudo_relevante = bool(resultados_busca and resultados_busca[0][1] >= SCORE_ACEITAVEL)
+    except Exception:
+        tem_conteudo_relevante = bool(resultados_busca)
     
     # Classificar com contexto sobre a base
     try:
@@ -78,7 +87,7 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
         prompt_classificacao = f"{entrada_usuario}{contexto_classificacao}"
         resposta = await agente_classificador.arun(prompt_classificacao)
         categoria = resposta.content.strip().upper()
-        print(f"✅ [DEBUG] Categoria classificada: '{categoria}' (base relevante: {tem_conteudo_relevante})")
+        print(f"[DEBUG] Categoria classificada: '{categoria}' (base relevante: {tem_conteudo_relevante})")
     except Exception:
         categoria = "MEDICA" if tem_conteudo_relevante else "GERAL"  # Se tem conteúdo relevante, força MEDICA
 
@@ -102,10 +111,11 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
 
         model = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY, temperature=0.3)
         resposta_social = await model.ainvoke(prompt_social)
-        return resposta_social.content
+        return resposta_social.content, "general"
 
-    # Inicializar contexto_final
+    # Inicializar contexto_final e origem
     contexto_final = "Conhecimento geral sobre saúde do homem"
+    origem_contexto = "general"
 
     # GERAL - mas se tem conteúdo relevante trata como MEDICA
     if categoria == "GERAL" and not tem_conteudo_relevante:
@@ -114,44 +124,90 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
     # MEDICA ou GERAL com conteúdo relevante - busca local e web se necessário
     else:
         # Usar os resultados já obtidos
-        print("🔍 [DEBUG] Fazendo busca detalhada por similaridade...")
+        print("[DEBUG] Fazendo busca detalhada por similaridade...")
         resultados = []
         if db is not None:
             try:
                 resultados = db.similarity_search_with_relevance_scores(entrada_usuario, k=4)
             except Exception as e:
-                print(f"⚠️ Erro ao buscar similaridade detalhada: {e}")
+                print(f"Erro ao buscar similaridade detalhada: {e}")
                 resultados = []
 
         if resultados:
             try:
-                print(f"🔍 [DEBUG] Scores encontrados: {[round(r[1], 3) for r in resultados]}")
+                print(f"[DEBUG] Scores encontrados: {[round(r[1], 3) for r in resultados]}")
             except Exception:
                 pass
 
-        # Se não achou nada bom localmente busca web (Chroma: valores menores = mais similares)
-        if len(resultados) == 0 or resultados[0][1] > -0.3:
-            print("🌍 [DEBUG] Score baixo ou sem resultados - buscando na web...")
+        # Aplicar estratégia híbrida de busca (local + web)
+        top_score = resultados[0][1] if resultados else None
+        print(f"[DEBUG] Top score: {top_score} | Excelente: {SCORE_EXCELENTE} | Aceitável: {SCORE_ACEITAVEL}")
+        
+        resposta_busca = ""
+        usar_local = False
+        
+        if resultados and top_score is not None:
+            if top_score >= SCORE_EXCELENTE:
+                # Excelente: só base local
+                usar_local = True
+                usar_web = False
+                print("✅ [DEBUG] Score excelente - usando APENAS base local")
+            elif top_score >= SCORE_ACEITAVEL:
+                # Médio: local + web (híbrido)
+                usar_local = True
+                usar_web = True
+                print("⚡ [DEBUG] Score médio - usando base local + busca web (híbrido)")
+            else:
+                # Ruim: só web
+                usar_local = False
+                usar_web = True
+                print("🌍 [DEBUG] Score ruim - usando APENAS busca web")
+        else:
+            # Sem resultados: só web
+            usar_web = True
+            print("🌍 [DEBUG] Sem resultados locais - buscando na web")
+        
+        # Executar busca web se necessário
+        if usar_web:
             try:
                 agente_busca = Agent(
                     tools=[DuckDuckGoTools()],
-                    instructions="Busque informações sobre saúde do homem"
+                    instructions="Busque informações confiáveis sobre saúde do homem em português"
                 )
                 resultado = await agente_busca.arun(entrada_usuario)
                 resposta_busca = resultado.content
-            except Exception:
+                print(f"✅ [DEBUG] Busca web concluída! Tamanho: {len(resposta_busca)} chars")
+            except Exception as e:
+                print(f"❌ [DEBUG] Erro na busca web: {e}")
                 resposta_busca = ""
-        else:
-            resposta_busca = ""
+        
+        # Definir contexto final combinando fontes
+        if usar_local and resposta_busca:
+            # Híbrido: local + web
+            contexto_docs = "\n".join([doc[0].page_content for doc in resultados[:2]])
+            contexto_final = f"""INFORMAÇÕES DA BASE LOCAL:
+{contexto_docs}
 
-        # Definir contexto baseado no que achou (Chroma: valores menores = mais similares)
-        if resultados and resultados[0][1] <= -0.4:
-            contexto_docs = "\n".join([doc[0].page_content for doc in resultados])
+INFORMAÇÕES COMPLEMENTARES DA WEB:
+{resposta_busca}"""
+            origem_contexto = "hybrid"
+            print(f"🔄 [DEBUG] Usando contexto HÍBRIDO (local + web, score: {top_score:.3f})")
+        elif usar_local:
+            # Só local
+            # Só local
+            contexto_docs = "\n".join([doc[0].page_content for doc in resultados[:3]])
             contexto_final = f"Com base nos documentos internos:\n{contexto_docs}"
-            print("✅ [DEBUG] Usando documentos da base local!")
+            origem_contexto = "local"
+            print(f"📄 [DEBUG] Usando APENAS base local (score: {top_score:.3f})")
         elif resposta_busca:
+            # Só web
             contexto_final = f"Com base em informações encontradas na web:\n{resposta_busca}"
-            print("🌍 [DEBUG] Usando busca web!")
+            origem_contexto = "web"
+            print("🌐 [DEBUG] Usando APENAS busca web")
+        else:
+            # Fallback: conhecimento geral da IA
+            origem_contexto = "general"
+            print("💭 [DEBUG] Sem contexto específico - usando conhecimento geral da IA")
 
     # Gerar resposta final
     historico_texto_final = ""
@@ -170,9 +226,10 @@ async def gerar_resposta(historico_conversa, entrada_usuario, nome_usuario=None)
 
     Pergunta do usuário: {entrada_usuario}
 
-    Responda de forma clara, amigável, considerando o contexto da conversa anterior. Use o nome do usuário quando apropriado para personalizar a resposta. Cite a fonte das informações quando possível."""
+    Responda de forma clara, amigável e natural, considerando o contexto da conversa anterior. Use o nome do usuário quando apropriado para personalizar a resposta. Seja objetiva e direta, sem mencionar repetidamente suas fontes de informação."""
 
     model = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY, temperature=0)
     resposta_final = await model.ainvoke(prompt)
 
-    return resposta_final.content
+    # Retornar resposta e origem do contexto
+    return resposta_final.content, origem_contexto
