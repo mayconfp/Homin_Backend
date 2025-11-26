@@ -1,3 +1,5 @@
+
+
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -27,16 +29,11 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-key-change-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
-
+    
     # CORS
-    cors_origins: list = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8000", "https://www.hominsaude.cloud", "https://hominsaude.cloud"]
-
-    # ✅ Adicione estes dois campos
-    environment: str = "development"
-    logout_return_to: str = "http://localhost:8000"
+    cors_origins: list = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8000", "https://hominsaude.cloud", "https://www.hominsaude.cloud"]
 
     class Config:
         env_file = ".env"
 
 settings = Settings()
-
