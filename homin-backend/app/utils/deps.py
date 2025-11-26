@@ -64,31 +64,42 @@ async def get_session():
 async def sync_user_to_local_db(token: str, payload: Dict, db_session: AsyncSession) -> Usuario:
     """Sincroniza usuário do Auth0 para a base local e retorna o objeto Usuario"""
     try:
-        # Se não tiver email no payload, buscar no /userinfo
+        # Tentar obter email do payload primeiro
         email = payload.get("email")
         nome = payload.get("name")
         
+        # Se não tiver email no payload, buscar no /userinfo
         if not email:
-            # Buscar informações do usuário no Auth0 /userinfo
-            userinfo_url = f"https://{AUTH0_DOMAIN}/userinfo"
-            headers = {"Authorization": f"Bearer {token}"}
-            response = requests.get(userinfo_url, headers=headers)
-            
-            if response.status_code == 200:
-                userinfo = response.json()
-                email = userinfo.get("email")
-                nome = userinfo.get("name", email)
-            
-            if not email:
-                raise HTTPException(status_code=400, detail="Email não encontrado no token ou userinfo")
+            print(f"⚠️ Email não encontrado no payload JWT. Buscando no /userinfo...")
+            try:
+                userinfo_url = f"https://{AUTH0_DOMAIN}/userinfo"
+                headers = {"Authorization": f"Bearer {token}"}
+                response = requests.get(userinfo_url, headers=headers, timeout=5)
+                
+                if response.status_code == 200:
+                    userinfo = response.json()
+                    email = userinfo.get("email")
+                    if not nome:
+                        nome = userinfo.get("name", userinfo.get("nickname", None))
+                    print(f"✅ Email obtido do /userinfo: {email}")
+                else:
+                    print(f"⚠️ Erro ao buscar /userinfo. Status: {response.status_code}")
+            except requests.exceptions.RequestException as req_error:
+                print(f"⚠️ Erro ao conectar com /userinfo: {req_error}")
         
+        # Se ainda assim não tiver email, lançar erro
+        if not email:
+            raise ValueError("Email não encontrado no token ou userinfo do Auth0")
+        
+        # Buscar usuário na base local
         stmt = select(Usuario).where(Usuario.email == email)
         user = await db_session.scalar(stmt)
         
         if not user:
+            # Criar novo usuário
             user = Usuario(
                 email=email,
-                nome=nome or email,
+                nome=nome or email.split("@")[0],
                 role="user"
             )
             db_session.add(user)
@@ -96,14 +107,20 @@ async def sync_user_to_local_db(token: str, payload: Dict, db_session: AsyncSess
             await db_session.refresh(user)
             print(f"✅ Novo usuário criado na base local: {email}")
         else:
+            # Atualizar nome se necessário
             if nome and user.nome != nome:
                 user.nome = nome
                 await db_session.commit()
+                print(f"✅ Usuário atualizado: {email}")
                 
         return user
+    except ValueError as ve:
+        # Erro de validação (email faltando)
+        print(f"❌ Erro ao sincronizar usuário: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        print(f"⚠️ Erro ao sincronizar usuário: {e}")
-        raise HTTPException(status_code=500, detail=f"Erro ao sincronizar usuário: {e}")
+        print(f"❌ Erro inesperado ao sincronizar usuário: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao sincronizar usuário: {str(e)}")
 
 async def get_logged_user(
     db_session: "SessionDep",
