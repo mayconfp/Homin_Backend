@@ -12,8 +12,10 @@ class Usuario(Base):
     id_usuario = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     nome = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    auth0_sub = Column(String(255), unique=True, nullable=True)  # Subject do Auth0 (google-oauth2|xxxx)
+    password_hash = Column(String(255), nullable=True)  # Hash bcrypt (nullable para OAuth users)
+    auth0_sub = Column(String(255), unique=True, nullable=True)  # Subject do Auth0 (google-oauth2|xxxx ou auth0|xxxx)
     role = Column(String(20), nullable=False, default="user")
+    auth_provider = Column(String(20), nullable=True, default="email")  # 'email', 'google', 'facebook'
     data_cadastro = Column(DateTime, default=datetime.utcnow)
 
     # relationships
