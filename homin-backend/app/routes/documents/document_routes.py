@@ -82,6 +82,7 @@ async def listar_documentos(
             existe = os.path.exists(caminho_arquivo)
             tamanho = os.path.getsize(caminho_arquivo) if existe else 0
             lista_documentos.append(DocumentList(
+                id_documento=doc.id_documento,
                 filename=doc.nome_arquivo,
                 size_bytes=tamanho,
                 in_db=True,
@@ -97,6 +98,7 @@ async def listar_documentos(
             caminho_arquivo = os.path.join(base_path, nome_arquivo)
             tamanho = os.path.getsize(caminho_arquivo)
             lista_documentos.append(DocumentList(
+                id_documento=None,  # Sem ID pois não está no banco
                 filename=nome_arquivo,
                 size_bytes=tamanho,
                 in_db=False,

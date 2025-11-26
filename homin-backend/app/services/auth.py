@@ -126,3 +126,152 @@ def get_user_permissions_from_auth0(access_token: str):
         print(f"⚠️ Erro ao obter permissões do Auth0: {e}")
     
     return 'user'  # fallback
+
+
+# ============================================
+# FUNÇÕES PARA REGISTRO E LOGIN COM EMAIL/SENHA
+# ============================================
+
+def register_user_auth0(email: str, password: str, name: str) -> dict:
+    """
+    Registra um novo usuário no Auth0 usando email e senha.
+    
+    Args:
+        email: Email do usuário
+        password: Senha do usuário
+        name: Nome completo do usuário
+    
+    Returns:
+        dict: Dados do usuário criado no Auth0
+    
+    Raises:
+        HTTPException: Se houver erro no registro
+    """
+    # URL da Management API do Auth0 para criar usuários
+    # Primeiro, precisamos obter um Management API token
+    
+    try:
+        # 1. Obter Management API Token (Client Credentials flow)
+        token_url = f"https://{AUTH0_DOMAIN}/oauth/token"
+        token_payload = {
+            "grant_type": "client_credentials",
+            "client_id": AUTH0_CLIENT_ID,
+            "client_secret": AUTH0_CLIENT_SECRET,
+            "audience": f"https://{AUTH0_DOMAIN}/api/v2/"
+        }
+        
+        token_response = requests.post(token_url, json=token_payload)
+        if token_response.status_code != 200:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Erro ao obter token de gerenciamento: {token_response.text}"
+            )
+        
+        mgmt_token = token_response.json()["access_token"]
+        
+        # 2. Criar usuário via Management API
+        create_user_url = f"https://{AUTH0_DOMAIN}/api/v2/users"
+        headers = {
+            "Authorization": f"Bearer {mgmt_token}",
+            "Content-Type": "application/json"
+        }
+        
+        user_payload = {
+            "email": email,
+            "password": password,
+            "name": name,
+            "connection": "Username-Password-Authentication",  # Database connection padrão do Auth0
+            "email_verified": False,  # Requer verificação de email
+            "app_metadata": {},
+            "user_metadata": {
+                "auth_provider": "email"
+            }
+        }
+        
+        create_response = requests.post(create_user_url, json=user_payload, headers=headers)
+        
+        if create_response.status_code == 409:
+            # Usuário já existe
+            raise HTTPException(
+                status_code=400,
+                detail="Email já cadastrado no sistema"
+            )
+        elif create_response.status_code != 201:
+            error_detail = create_response.json().get("message", create_response.text)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Erro ao criar usuário: {error_detail}"
+            )
+        
+        user_data = create_response.json()
+        return user_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao registrar usuário: {str(e)}"
+        )
+
+
+def login_with_password(email: str, password: str) -> dict:
+    """
+    Realiza login com email e senha usando Resource Owner Password Grant.
+    
+    Args:
+        email: Email do usuário
+        password: Senha do usuário
+    
+    Returns:
+        dict: Tokens de acesso (access_token, id_token, expires_in)
+    
+    Raises:
+        HTTPException: Se credenciais forem inválidas
+    """
+    try:
+        # Usar /oauth/token com grant_type http://auth0.com/oauth/grant-type/password-realm
+        token_url = f"https://{AUTH0_DOMAIN}/oauth/token"
+        
+        payload = {
+            "grant_type": "http://auth0.com/oauth/grant-type/password-realm",
+            "username": email,
+            "password": password,
+            "client_id": AUTH0_CLIENT_ID,
+            "client_secret": AUTH0_CLIENT_SECRET,
+            "audience": AUTH0_AUDIENCE,
+            "scope": "openid profile email",
+            "realm": "Username-Password-Authentication"  # Database connection name
+        }
+        
+        response = requests.post(token_url, json=payload)
+        
+        if response.status_code == 403:
+            raise HTTPException(
+                status_code=401,
+                detail="Credenciais inválidas. Verifique email e senha."
+            )
+        elif response.status_code != 200:
+            error_data = response.json()
+            error_msg = error_data.get("error_description", "Erro ao fazer login")
+            error_code = error_data.get("error", "unknown_error")
+            
+            # Log detalhado para debug
+            print(f"❌ Auth0 Login Error: {error_code} - {error_msg}")
+            print(f"📄 Full response: {error_data}")
+            
+            raise HTTPException(
+                status_code=401,
+                detail=f"{error_msg} (error: {error_code})"
+            )
+        
+        token_data = response.json()
+        return token_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao fazer login: {str(e)}"
+        )

@@ -71,10 +71,7 @@ async def chat_with_ai(
             await db_session.flush()  # Para obter o ID
         
         # 2. Gerar resposta da IA
-        resposta = await gerar_resposta(historico_conversa, request.message, user.nome)
-        
-        # 3. Determinar origem do contexto (simplificado)
-        origem_contexto = "local"  # Você pode modificar gerar_resposta para retornar isso
+        resposta, origem_contexto = await gerar_resposta(historico_conversa, request.message, user.nome)
         
         # 4. Salvar mensagem do usuário
         msg_usuario = HistoricoMensagem(
