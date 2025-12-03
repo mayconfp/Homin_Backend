@@ -27,3 +27,9 @@ docker/
 
 # Alembic cache
 alembic/__pycache__/
+
+.venv/
+
+venv/
+
+homin-backend/app/.venv

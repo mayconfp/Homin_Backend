@@ -48,23 +48,27 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
 
     try:
         token_data = exchange_code_for_token(code)
-        user_info = get_user_info(token_data["access_token"])
+        access_token = token_data.get("access_token")
+        
+        # Obter dados do usuário do Auth0
+        user_info = get_user_info(access_token)
 
+        # Decodificar o JWT para obter o payload
+        from app.utils.deps import verify_jwt
+        access_payload = verify_jwt(access_token)
+        
+        # Criar payload com dados completos do userinfo + permissões do access_token
+        user_payload = {
+            "email": user_info.get("email"),
+            "name": user_info.get("name", user_info.get("email", "User")),
+            "sub": user_info.get("sub"),
+            "nickname": user_info.get("nickname"),
+            "picture": user_info.get("picture"),
+            "permissions": access_payload.get("permissions", [])
+        }
+        
         # Sincronizar usuário com base local usando dados completos do userinfo
-        if user_info.get("email"):
-            # Criar payload com dados do userinfo + permissões do access_token
-            from app.utils.deps import verify_jwt
-            access_payload = verify_jwt(token_data["access_token"])
-            
-            user_payload = {
-                "email": user_info["email"],
-                "name": user_info.get("name", user_info.get("email")),
-                "sub": user_info["sub"],
-                "permissions": access_payload.get("permissions", [])
-            }
-            
-            # sync_user_to_local_db signature: (token, payload, db_session)
-            await sync_user_to_local_db(token_data.get("access_token"), user_payload, db_session)
+        await sync_user_to_local_db(access_token, user_payload, db_session)
 
         # Se o provedor retornou um 'state', tentar decodificar o return URL.
         state = request.query_params.get("state")
@@ -81,7 +85,7 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
         # Permitimos qualquer porta para hosts permitidos (compara por hostname apenas)
         allowed = os.getenv(
             "ALLOWED_REDIRECTS",
-            "http://localhost:5173,http://localhost:3000,https://www.hominsaude.cloud",
+            "http://localhost:5173,http://localhost:3000,https://www.hominsaude.cloud,https://hominsaude.cloud",
         )
         allowed_hosts = set()
         for u in [s.strip() for s in allowed.split(",") if s.strip()]:
@@ -129,6 +133,7 @@ async def callback(request: Request, db_session: SessionDep, code: str = None):
 
         return response
     except Exception as e:
+        print(f"❌ Erro no callback de autenticação: {e}")
         return JSONResponse(status_code=400, content={"error": str(e)})
 
 

@@ -103,7 +103,7 @@ def get_user_permissions_from_payload(payload: Dict):
         elif 'chat:access' in permissions or any('user' in str(r).lower() for r in roles):
             return 'user'
         else:
-            return 'user'  # default
+            return 'user'
                 
     except Exception as e:
         print(f"⚠️ Erro ao obter permissões do JWT: {e}")
