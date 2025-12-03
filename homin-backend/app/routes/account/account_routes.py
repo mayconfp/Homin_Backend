@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, status, Response
 from sqlalchemy import select
 
 from app.database.models import Usuario
-from app.services.auth import register_user_auth0, login_with_password, get_user_info
+from app.services.auth import register_user_auth0, login_with_password
 from app.utils.deps import SessionDep, sync_user_to_local_db, verify_jwt
 from app.utils.security import hash_password
 from .schema import (
@@ -143,14 +143,10 @@ async def login_with_email_password(
         access_token = token_data["access_token"]
         expires_in = token_data.get("expires_in", 86400)
         
-        # 2. Buscar informações do usuário
-        user_info = get_user_info(access_token)
-        
-        # 3. Sincronizar com base local
+        # 2. Decodificar JWT para extrair dados do usuário (SEM chamar /userinfo!)
         payload = verify_jwt(access_token)
-        payload["email"] = user_info.get("email")
-        payload["name"] = user_info.get("name")
         
+        # 3. Sincronizar com base local usando dados do JWT
         local_user = await sync_user_to_local_db(access_token, payload, db_session)
         
         # 4. Atualizar auth_provider se necessário

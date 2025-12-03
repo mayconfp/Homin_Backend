@@ -90,40 +90,23 @@ def get_user_info(access_token: str):
 
 # DEPENDÊNCIAS PARA PROTEÇÃO DE ROTAS
 
-def get_user_permissions_from_auth0(access_token: str):
-    """Obtém as permissões/roles do usuário do Auth0"""
+def get_user_permissions_from_payload(payload: Dict):
+    """Obtém as permissões/roles do usuário decodificando o JWT (SEM chamar /userinfo)"""
     try:
-        # Buscar permissões do usuário via Management API
-        userinfo_url = f"https://{AUTH0_DOMAIN}/userinfo"
-        headers = {"Authorization": f"Bearer {access_token}"}
-        response = requests.get(userinfo_url, headers=headers)
+        # As permissões estão embutidas no JWT, não precisa chamar a API
+        permissions = payload.get('permissions', [])
+        roles = payload.get('https://homin.app/roles', [])
         
-        if response.status_code == 200:
-            user_info = response.json()
-            
-            # As permissões podem estar em diferentes lugares dependendo da configuração
-            permissions = []
-            roles = []
-            
-            # Verificar se há permissões no token customizado
-            if 'permissions' in user_info:
-                permissions = user_info.get('permissions', [])
-            
-            if 'https://homin.app/roles' in user_info:
-                roles = user_info.get('https://homin.app/roles', [])
-            elif 'roles' in user_info:
-                roles = user_info.get('roles', [])
-            
-            # Determinar role baseado nas permissões
-            if 'admin:documents' in permissions or 'admin' in roles:
-                return 'admin'
-            elif 'chat:access' in permissions or any('user' in str(r).lower() for r in roles):
-                return 'user'
-            else:
-                return 'user'  # default
+        # Determinar role baseado nas permissões do JWT
+        if 'admin:documents' in permissions or 'admin' in roles:
+            return 'admin'
+        elif 'chat:access' in permissions or any('user' in str(r).lower() for r in roles):
+            return 'user'
+        else:
+            return 'user'  # default
                 
     except Exception as e:
-        print(f"⚠️ Erro ao obter permissões do Auth0: {e}")
+        print(f"⚠️ Erro ao obter permissões do JWT: {e}")
     
     return 'user'  # fallback
 

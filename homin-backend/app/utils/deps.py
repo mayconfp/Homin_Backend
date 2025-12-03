@@ -62,48 +62,102 @@ async def get_session():
         yield session
 
 async def sync_user_to_local_db(token: str, payload: Dict, db_session: AsyncSession) -> Usuario:
-    """Sincroniza usuário do Auth0 para a base local e retorna o objeto Usuario"""
+    """
+    Sincroniza usuário do Auth0 para a base local e retorna o objeto Usuario.
+    
+    Estratégia otimizada para evitar rate limiting:
+    1. Busca por auth0_sub PRIMEIRO (mais rápido, sem chamadas de API)
+    2. Se encontrar, retorna logo (sem chamar /userinfo)
+    3. Se não encontrar, busca email do JWT ou /userinfo (apenas UMA vez)
+    """
     try:
-        # Se não tiver email no payload, buscar no /userinfo
+        auth0_sub = payload.get("sub")
         email = payload.get("email")
-        nome = payload.get("name")
+        nome = payload.get("name", payload.get("nickname", None))
+        
+        print(f"🔍 Sincronizando: sub={auth0_sub}, email={email}")
+        
+        # 1. PRIMEIRO: Buscar por auth0_sub (mais confiável, sem API call)
+        user = None
+        if auth0_sub:
+            stmt = select(Usuario).where(Usuario.auth0_sub == auth0_sub)
+            user = await db_session.scalar(stmt)
+            if user:
+                print(f"✅ Usuário encontrado por sub (cache): {user.email}")
+                return user  # ← Retorna logo, sem chamar /userinfo!
+        
+        # 2. Se não tiver email no JWT, buscar no /userinfo (APENAS se necessário)
+        if not email and token:
+            try:
+                userinfo_url = f"https://{AUTH0_DOMAIN}/userinfo"
+                headers = {"Authorization": f"Bearer {token}"}
+                response = requests.get(userinfo_url, headers=headers, timeout=3)
+                
+                if response.status_code == 200:
+                    userinfo = response.json()
+                    email = userinfo.get("email")
+                    nome = userinfo.get("name", nome)
+                    print(f"📧 Email obtido de /userinfo: {email}")
+                elif response.status_code == 429:
+                    print(f"⚠️ Rate limit - usando fallback")
+                    # Fallback: usar sub como identificador
+                    if auth0_sub:
+                        sub_id = auth0_sub.split("|")[-1]
+                        email = f"user_{sub_id}@auth0.local"
+                        nome = nome or f"User {sub_id[:8]}"
+            except requests.Timeout:
+                print(f"⚠️ Timeout /userinfo - fallback")
+                if auth0_sub:
+                    sub_id = auth0_sub.split("|")[-1]
+                    email = f"user_{sub_id}@auth0.local"
+            except Exception as e:
+                print(f"⚠️ Erro /userinfo: {e}")
+        
+        if not email and auth0_sub:
+            sub_id = auth0_sub.split("|")[-1]
+            email = f"user_{sub_id}@auth0.local"
+            nome = nome or f"User {sub_id[:8]}"
         
         if not email:
-            # Buscar informações do usuário no Auth0 /userinfo
-            userinfo_url = f"https://{AUTH0_DOMAIN}/userinfo"
-            headers = {"Authorization": f"Bearer {token}"}
-            response = requests.get(userinfo_url, headers=headers)
-            
-            if response.status_code == 200:
-                userinfo = response.json()
-                email = userinfo.get("email")
-                nome = userinfo.get("name", email)
-            
-            if not email:
-                raise HTTPException(status_code=400, detail="Email não encontrado no token ou userinfo")
+            raise ValueError(f"Email não encontrado. Sub: {auth0_sub}")
         
+        # 3. Buscar por email
         stmt = select(Usuario).where(Usuario.email == email)
         user = await db_session.scalar(stmt)
         
+        # 4. Criar ou atualizar
         if not user:
             user = Usuario(
                 email=email,
-                nome=nome or email,
+                nome=nome or email.split("@")[0],
+                auth0_sub=auth0_sub,
                 role="user"
             )
             db_session.add(user)
             await db_session.commit()
             await db_session.refresh(user)
-            print(f"✅ Novo usuário criado na base local: {email}")
+            print(f"✅ Novo usuário: {email}")
         else:
+            updated = False
             if nome and user.nome != nome:
                 user.nome = nome
+                updated = True
+            if auth0_sub and user.auth0_sub != auth0_sub:
+                user.auth0_sub = auth0_sub
+                updated = True
+            
+            if updated:
                 await db_session.commit()
-                
+                print(f"✅ Usuário atualizado: {email}")
+        
         return user
+        
+    except ValueError as ve:
+        print(f"❌ Erro: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        print(f"⚠️ Erro ao sincronizar usuário: {e}")
-        raise HTTPException(status_code=500, detail=f"Erro ao sincronizar usuário: {e}")
+        print(f"❌ Erro inesperado: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao sincronizar: {str(e)}")
 
 async def get_logged_user(
     db_session: "SessionDep",
