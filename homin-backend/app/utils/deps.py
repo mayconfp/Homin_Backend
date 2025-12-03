@@ -127,6 +127,7 @@ async def sync_user_to_local_db(token: str, payload: Dict, db_session: AsyncSess
         
         # 4. Criar ou atualizar
         if not user:
+            # Criar novo usuário
             user = Usuario(
                 email=email,
                 nome=nome or email.split("@")[0],
